@@ -67,31 +67,12 @@ WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
-# Accept common human-written values such as "Gemini_2_5_Flash".
-def normalize_gemini_model(value: str) -> str:
-    value = (value or "").strip().lower()
-    aliases = {
-        "gemini_2_5_flash": "gemini-2.5-flash",
-        "gemini 2.5 flash": "gemini-2.5-flash",
-        "gemini_2_5_flash_lite": "gemini-2.5-flash-lite",
-        "gemini 2.5 flash lite": "gemini-2.5-flash-lite",
-    }
-    return aliases.get(value, value)
-
-GEMINI_MODEL = normalize_gemini_model(GEMINI_MODEL)
-GEMINI_FALLBACK_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
-]
-GEMINI_ACTIVE_MODEL = GEMINI_MODEL
-
 GROQ_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_REASONING_MODEL = os.getenv(
     "GROQ_REASONING_MODEL", "openai/gpt-oss-120b"
 ).strip()
 GROQ_CODING_MODEL = os.getenv(
-    "GROQ_CODING_MODEL", "qwen/qwen3-32b"
+    "GROQ_CODING_MODEL", "openai/gpt-oss-20b"
 ).strip()
 GROQ_FAST_MODEL = os.getenv(
     "GROQ_FAST_MODEL", "openai/gpt-oss-20b"
@@ -122,11 +103,13 @@ GEMINI_IMAGE_MODEL = os.getenv(
 
 # Telegram bot download limit is 20 MB for getFile.
 MAX_TELEGRAM_DOWNLOAD = 20 * 1024 * 1024
-MAX_HISTORY = 24
-MAX_KNOWLEDGE_CHUNKS = 6
-MAX_FEWSHOT = 4
-CHUNK_SIZE = 5000
-CHUNK_OVERLAP = 500
+MAX_HISTORY = 8
+MAX_KNOWLEDGE_CHUNKS = 3
+MAX_FEWSHOT = 2
+CHUNK_SIZE = 3500
+CHUNK_OVERLAP = 300
+MAX_PROMPT_CHARS = 12000
+MAX_GROQ_OUTPUT_TOKENS = 1200
 
 
 SYSTEM_PROMPT = """
@@ -674,21 +657,21 @@ async def build_prompt(uid: str, user_text: str) -> str:
     examples = await retrieve_examples(uid, user_text)
 
     history = mem.get("history", [])[-MAX_HISTORY:]
-    facts = mem.get("facts", [])
+    facts = mem.get("facts", [])[-20:]
 
     parts = [SYSTEM_PROMPT]
 
     if facts:
         parts.append(
             "PERSISTENT MEMORY / FAKTA PENGGUNA:\n- "
-            + "\n- ".join(clean_text(x, 1000) for x in facts[-50:])
+            + "\n- ".join(clean_text(x, 700) for x in facts)
         )
 
     if history:
         parts.append(
             "RIWAYAT PERCAKAPAN TERBARU:\n"
             + "\n".join(
-                f"{m.get('role')}: {clean_text(m.get('content'), 4000)}"
+                f"{m.get('role')}: {clean_text(m.get('content'), 1800)}"
                 for m in history
             )
         )
@@ -696,7 +679,7 @@ async def build_prompt(uid: str, user_text: str) -> str:
     if knowledge:
         parts.append(
             "KNOWLEDGE BASE RELEVAN:\n"
-            + "\n\n---\n\n".join(knowledge)
+            + "\n\n---\n\n".join(clean_text(x, 3500) for x in knowledge)
         )
 
     if examples:
@@ -704,64 +687,71 @@ async def build_prompt(uid: str, user_text: str) -> str:
             "FEW-SHOT EXAMPLES RELEVAN:\n"
             + "\n\n".join(
                 f"Contoh {i+1} ({e.get('category')}):\n"
-                f"Q: {e.get('question')}\n"
-                f"A: {e.get('answer')}"
+                f"Q: {clean_text(e.get('question'), 1200)}\n"
+                f"A: {clean_text(e.get('answer'), 2200)}"
                 for i, e in enumerate(examples)
             )
         )
 
-    parts.append(f"PESAN PENGGUNA:\n{user_text}\n\nJawab pesan pengguna.")
-    return "\n\n".join(parts)
-
-
-async def _gemini_generate(model: str, contents: Any, config: Any = None) -> Any:
-    if not gemini:
-        raise RuntimeError("Gemini tidak tersedia.")
-    kwargs = {"model": model, "contents": contents}
-    if config is not None:
-        kwargs["config"] = config
-    return await asyncio.to_thread(gemini.models.generate_content, **kwargs)
-
-
-async def _gemini_call_with_fallback(contents: Any, config: Any = None) -> tuple[Any, str]:
-    """Try the configured model first, then safe Gemini fallbacks.
-
-    This protects the bot when a Google API key/project cannot access the
-    configured model. The preferred model remains GEMINI_MODEL.
-    """
-    global GEMINI_ACTIVE_MODEL
-    if not gemini:
-        raise RuntimeError("Gemini tidak tersedia.")
-
-    candidates = []
-    for model in [GEMINI_ACTIVE_MODEL, GEMINI_MODEL, *GEMINI_FALLBACK_MODELS]:
-        model = normalize_gemini_model(model)
-        if model and model not in candidates:
-            candidates.append(model)
-
-    errors = []
-    for model in candidates:
-        try:
-            response = await _gemini_generate(model, contents, config)
-            GEMINI_ACTIVE_MODEL = model
-            return response, model
-        except Exception as exc:
-            message = str(exc)
-            errors.append(f"{model}: {message[:220]}")
-            log.warning("Gemini model %s gagal: %s", model, message[:300])
-
-    raise RuntimeError("Semua model Gemini gagal. " + " | ".join(errors))
+    parts.append(f"PESAN PENGGUNA:\n{clean_text(user_text, 6000)}\n\nJawab pesan pengguna.")
+    prompt = "\n\n".join(parts)
+    return prompt[:MAX_PROMPT_CHARS]
 
 
 async def call_gemini(uid: str, text: str) -> str:
-    if not gemini:
-        raise RuntimeError("Gemini tidak tersedia.")
+    if not GEMINI_KEY:
+        raise RuntimeError("GEMINI_API_KEY belum tersedia.")
+
     prompt = await build_prompt(uid, text)
-    response, _ = await _gemini_call_with_fallback(prompt)
-    answer = clean_text(getattr(response, "text", ""), 16000)
-    if not answer:
-        raise RuntimeError("Gemini tidak mengembalikan jawaban.")
-    return answer
+    model_name = GEMINI_MODEL
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model_name}:generateContent"
+    )
+    payload = {
+        "contents": [{
+            "role": "user",
+            "parts": [{"text": prompt}],
+        }]
+    }
+
+    last_error = ""
+    async with httpx.AsyncClient(timeout=60) as client:
+        for attempt in range(3):
+            try:
+                response = await client.post(
+                    url,
+                    headers={
+                        "x-goog-api-key": GEMINI_KEY,
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
+                    answer = "\n".join(
+                        p.get("text", "") for p in parts if p.get("text")
+                    ).strip()
+                    if answer:
+                        return clean_text(answer, 16000)
+                    last_error = "Gemini tidak mengembalikan teks."
+                    break
+
+                body = response.text[:500]
+                last_error = f"HTTP {response.status_code}: {body}"
+                if response.status_code == 404:
+                    break
+                if response.status_code in (429, 500, 502, 503, 504):
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                break
+            except Exception as exc:
+                last_error = str(exc)
+                if attempt < 2:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+
+    raise RuntimeError(f"Gemini gagal: {last_error[:500]}")
 
 
 async def call_groq(
@@ -772,14 +762,6 @@ async def call_groq(
     if not groq:
         raise RuntimeError("Groq tidak tersedia.")
     prompt = await build_prompt(uid, text)
-    # Keep Groq fallback payload safely bounded; GitHub memory/knowledge can
-    # otherwise make the OpenAI-compatible request too large (HTTP 413).
-    if len(prompt) > 28000:
-        prompt = (
-            prompt[:6000]
-            + "\n\n[RIWAYAT/KNOWLEDGE DIPANGKAS UNTUK BATAS PAYLOAD]\n\n"
-            + prompt[-22000:]
-        )
 
     def _call() -> str:
         response = groq.chat.completions.create(
@@ -789,6 +771,7 @@ async def call_groq(
                 {"role": "user", "content": prompt},
             ],
             temperature=0.4,
+            max_tokens=MAX_GROQ_OUTPUT_TOKENS,
         )
         return clean_text(
             response.choices[0].message.content
@@ -958,10 +941,14 @@ async def analyze_image(data: bytes, mime: str, prompt: str) -> str:
     if not gemini:
         raise RuntimeError("Gemini diperlukan untuk analisis foto.")
 
-    response, _ = await _gemini_call_with_fallback([
-        types.Part.from_bytes(data=data, mime_type=mime),
-        SYSTEM_PROMPT + "\n\n" + prompt,
-    ])
+    response = await asyncio.to_thread(
+        gemini.models.generate_content,
+        model=GEMINI_MODEL,
+        contents=[
+            types.Part.from_bytes(data=data, mime_type=mime),
+            SYSTEM_PROMPT + "\n\n" + prompt,
+        ],
+    )
     answer = clean_text(getattr(response, "text", ""), 16000)
     if not answer:
         raise RuntimeError("Gemini tidak mengembalikan analisis gambar.")
@@ -998,10 +985,14 @@ async def analyze_video(data: bytes, mime: str, prompt: str) -> str:
     else:
         raise RuntimeError("Video terlalu lama diproses Gemini.")
 
-    response, _ = await _gemini_call_with_fallback([
-        uploaded,
-        SYSTEM_PROMPT + "\n\n" + prompt,
-    ])
+    response = await asyncio.to_thread(
+        gemini.models.generate_content,
+        model=GEMINI_MODEL,
+        contents=[
+            uploaded,
+            SYSTEM_PROMPT + "\n\n" + prompt,
+        ],
+    )
     answer = clean_text(getattr(response, "text", ""), 16000)
     if not answer:
         raise RuntimeError("Gemini tidak mengembalikan analisis video.")
@@ -1146,6 +1137,7 @@ async def handle_update(update: dict[str, Any]) -> None:
             "• Video → Pollinations jika aktif\n\n"
             "Perintah:\n"
             "/model\n"
+            "/gemini <pertanyaan>\n"
             "/memory\n"
             "/knowledge\n"
             "/remember <teks>\n"
@@ -1156,12 +1148,33 @@ async def handle_update(update: dict[str, Any]) -> None:
         )
         return
 
+    # /gemini — direct Gemini test, bypasses routing/fallback.
+    if is_command(text, "/gemini"):
+        prompt = command_arg(text)
+        if not prompt:
+            await send_text(
+                chat_id,
+                f"Gemini aktif: {GEMINI_MODEL}\nGunakan: /gemini <pertanyaan>",
+            )
+            return
+        try:
+            await tg("sendChatAction", {"chat_id": chat_id, "action": "typing"})
+            answer = await call_gemini(uid, prompt)
+            await send_text(chat_id, f"🟢 Gemini ({GEMINI_MODEL})\n\n{answer}")
+        except Exception as exc:
+            log.exception("direct Gemini test failed")
+            await send_text(
+                chat_id,
+                f"🔴 Gemini gagal ({GEMINI_MODEL}).\n{str(exc)[:700]}",
+            )
+        return
+
     # /model
     if is_command(text, "/model"):
         await send_text(
             chat_id,
             "🤖 STATUS PROVIDER\n\n"
-            f"Gemini: {'✅' if gemini else '❌'} (dipilih: {GEMINI_MODEL}, aktif: {GEMINI_ACTIVE_MODEL})\n"
+            f"Gemini: {'✅' if gemini else '❌'} ({GEMINI_MODEL})\n"
             f"Groq: {'✅' if groq else '❌'}\n"
             f"  Reasoning: {GROQ_REASONING_MODEL}\n"
             f"  Coding: {GROQ_CODING_MODEL}\n"
@@ -1531,6 +1544,17 @@ async def root() -> dict[str, Any]:
 
 @app.post("/webhook")
 async def webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: Optional[str] = Header(default=None),
+):
+    return await webhook_impl(
+        request,
+        x_telegram_bot_api_secret_token,
+    )
+
+
+@app.post("/api")
+async def webhook_api_root(
     request: Request,
     x_telegram_bot_api_secret_token: Optional[str] = Header(default=None),
 ):
