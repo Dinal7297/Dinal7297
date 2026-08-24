@@ -87,6 +87,14 @@ POLLINATIONS_IMAGE_MODEL = os.getenv(
 
 POLLINATIONS_BASE_URL = "https://gen.pollinations.ai"
 
+# Cloudflare Workers AI - image generator utama
+CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
+CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "")
+CLOUDFLARE_IMAGE_MODEL = os.getenv(
+    "CLOUDFLARE_IMAGE_MODEL",
+    "@cf/black-forest-labs/flux-1-schnell"
+)
+
 
 # ============================================================
 # SYSTEM PROMPT
@@ -2618,7 +2626,9 @@ async def send_text(
 
 async def send_photo(
     chat_id,
-    data
+    data,
+    filename="image.png",
+    mime_type="image/png",
 ):
 
     async with httpx.AsyncClient(
@@ -2636,9 +2646,9 @@ async def send_photo(
             },
             files={
                 "photo": (
-                    "image.png",
+                    filename,
                     data,
-                    "image/png",
+                    mime_type,
                 )
             },
         )
@@ -2879,6 +2889,82 @@ def analyze_video(
 # IMAGE GENERATION
 # ============================================================
 
+def cloudflare_image(
+    prompt
+):
+
+    if not CLOUDFLARE_ACCOUNT_ID:
+        raise RuntimeError(
+            "CLOUDFLARE_ACCOUNT_ID belum tersedia."
+        )
+
+    if not CLOUDFLARE_API_TOKEN:
+        raise RuntimeError(
+            "CLOUDFLARE_API_TOKEN belum tersedia."
+        )
+
+    url = (
+        "https://api.cloudflare.com/client/v4/accounts/"
+        f"{CLOUDFLARE_ACCOUNT_ID}/ai/run/"
+        f"{CLOUDFLARE_IMAGE_MODEL}"
+    )
+
+    with httpx.Client(timeout=300) as client:
+
+        r = client.post(
+            url,
+            headers={
+                "Authorization":
+                    f"Bearer {CLOUDFLARE_API_TOKEN}",
+                "Content-Type": "application/json",
+                "Accept": "image/jpeg, image/png, application/json",
+            },
+            json={
+                "prompt": prompt,
+            },
+        )
+
+        if r.status_code >= 400:
+            raise RuntimeError(
+                f"Cloudflare HTTP {r.status_code}: "
+                f"{r.text[:400]}"
+            )
+
+        if not r.content:
+            raise RuntimeError(
+                "Cloudflare mengembalikan data gambar kosong."
+            )
+
+        content_type = (
+            r.headers.get("content-type", "")
+            .lower()
+        )
+
+        # Cloudflare dapat mengembalikan binary image atau JSON
+        # berisi base64, tergantung response/content negotiation.
+        if "application/json" in content_type:
+            try:
+                payload = r.json()
+                image_b64 = (
+                    payload.get("result", {})
+                    .get("image", "")
+                )
+
+                if image_b64:
+                    return base64.b64decode(image_b64)
+            except Exception as e:
+                raise RuntimeError(
+                    "Response gambar Cloudflare tidak valid: "
+                    + str(e)[:220]
+                )
+
+            raise RuntimeError(
+                "Cloudflare tidak mengembalikan image base64."
+            )
+
+        return r.content
+
+
 def pollinations_image(
     prompt
 ):
@@ -2940,6 +3026,24 @@ def generate_image(
     prompt
 ):
 
+    # Cloudflare menjadi generator gambar utama.
+    try:
+
+        return (
+            cloudflare_image(
+                prompt
+            ),
+            "Cloudflare FLUX",
+        )
+
+    except Exception as cloudflare_error:
+
+        log.warning(
+            "Cloudflare image gagal: %s",
+            str(cloudflare_error)[:300],
+        )
+
+    # Generator lama tetap dipertahankan sebagai fallback.
     if POLLINATIONS_ENABLED:
 
         return (
@@ -2950,7 +3054,7 @@ def generate_image(
         )
 
     raise RuntimeError(
-        "Generate gambar GRATIS belum tersedia."
+        "Generator gambar Cloudflare gagal dan Pollinations tidak diaktifkan."
     )
 
 
@@ -3236,6 +3340,16 @@ Contoh:
             await send_photo(
                 chat_id,
                 data,
+                (
+                    "image.jpg"
+                    if provider == "Cloudflare FLUX"
+                    else "image.png"
+                ),
+                (
+                    "image/jpeg"
+                    if provider == "Cloudflare FLUX"
+                    else "image/png"
+                ),
             )
 
             await send_text(
