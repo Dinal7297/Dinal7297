@@ -3,6 +3,7 @@ import base64
 import mimetypes
 import os
 import time
+import random
 import logging
 import re
 import math
@@ -52,7 +53,10 @@ GEMINI_VIDEO_MODEL = os.getenv(
 )
 
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
-OPENROUTER_FREE_MODEL = "openrouter/free"
+OPENROUTER_FREE_MODEL = os.getenv(
+    "OPENROUTER_FREE_MODEL",
+    "openrouter/free",
+)
 
 GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_FAST_MODEL = os.getenv(
@@ -62,7 +66,7 @@ GROQ_FAST_MODEL = os.getenv(
 
 GROQ_REASONING_MODEL = os.getenv(
     "GROQ_REASONING_MODEL",
-    "openai/gpt-oss-20b"
+    "openai/gpt-oss-120b"
 )
 
 GROQ_CODING_MODEL = os.getenv(
@@ -446,6 +450,23 @@ GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
 GITHUB_MEMORY_DIR = "memory"
 GITHUB_API = "https://api.github.com"
 
+# ------------------------------------------------------------
+# BATAS KONTEKS YANG DIKIRIM KE LLM (BARU)
+# ------------------------------------------------------------
+# Terpisah dari MAX_MEMORY (yang tetap dipakai untuk penyimpanan
+# permanent memory di GitHub, TIDAK berubah). Ini hanya mengatur
+# berapa banyak riwayat yang benar-benar dikirim ke provider AI
+# per request, supaya tidak kena limit token/rate dari provider
+# gratis (khususnya Groq yang TPM-nya kecil).
+MAX_CONTEXT_TURNS = 8
+MAX_CONTEXT_CHARS_PER_ITEM = 1200
+
+GROQ_MAX_CONTEXT_TURNS = 4
+GROQ_MAX_CONTEXT_CHARS_PER_ITEM = 400
+GROQ_MAX_OUTPUT_TOKENS = 1536
+
+OPENROUTER_MAX_OUTPUT_TOKENS = 2048
+
 
 def history(uid):
     return memory.setdefault(uid, [])
@@ -459,6 +480,42 @@ def remember(uid, role, content):
     })
 
     memory[uid] = history(uid)[-MAX_MEMORY:]
+
+
+def _trim_history_for_context(
+    uid,
+    max_turns=MAX_CONTEXT_TURNS,
+    max_chars_per_item=MAX_CONTEXT_CHARS_PER_ITEM,
+):
+    """
+    Ambil riwayat terbaru saja (max_turns item terakhir),
+    dan potong setiap item yang terlalu panjang.
+    Tujuan: hemat token supaya tidak kena limit provider gratis.
+    Tidak mengubah data yang tersimpan di memory[] / GitHub,
+    hanya mempengaruhi apa yang dikirim ke LLM saat itu.
+    """
+
+    items = history(uid)[-max_turns:]
+
+    trimmed = []
+
+    for m in items:
+
+        content = m.get("content", "") or ""
+
+        if len(content) > max_chars_per_item:
+
+            content = (
+                content[:max_chars_per_item]
+                + "\n...(riwayat dipotong untuk hemat token)"
+            )
+
+        trimmed.append({
+            "role": m.get("role", "user"),
+            "content": content,
+        })
+
+    return trimmed
 
 
 def _memory_path(uid):
@@ -521,7 +578,13 @@ async def save_persistent_memory(uid):
         log.warning("PERSISTENT MEMORY SAVE FAILED | uid=%s | %s", uid, str(e)[:300])
 
 
-def build_messages(uid, text, task):
+def build_messages(
+    uid,
+    text,
+    task,
+    max_turns=MAX_CONTEXT_TURNS,
+    max_chars_per_item=MAX_CONTEXT_CHARS_PER_ITEM,
+):
 
     task_hint = {
 
@@ -620,7 +683,11 @@ Jawab langsung, jelas, dan berguna.
             "role": "system",
             "content": SYSTEM + "\n\n" + task_hint,
         }
-    ] + history(uid) + [
+    ] + _trim_history_for_context(
+        uid,
+        max_turns,
+        max_chars_per_item,
+    ) + [
         {
             "role": "user",
             "content": text,
@@ -1945,7 +2012,7 @@ def call_openrouter(uid, text, task):
             text,
             task
         ),
-        max_tokens=4096,
+        max_tokens=OPENROUTER_MAX_OUTPUT_TOKENS,
         extra_headers={
             "HTTP-Referer":
                 "https://designmanufaktur.vercel.app",
@@ -2028,7 +2095,7 @@ jangan menyatakan aman tanpa perhitungan engineering.
         + "\n\n"
     )
 
-    for m in history(uid):
+    for m in _trim_history_for_context(uid):
 
         prompt += (
             f"{m['role']}: "
@@ -2056,33 +2123,37 @@ jangan menyatakan aman tanpa perhitungan engineering.
 # GROQ
 # ============================================================
 
-def call_groq(uid, text, task):
+def call_groq(uid, text, task, model=None):
 
     if not groq:
         raise RuntimeError(
             "GROQ_API_KEY belum tersedia."
         )
 
-    if task == "coding":
-        model = GROQ_CODING_MODEL
+    if not model:
 
-    elif task in (
-        "reasoning",
-        "math",
-    ):
-        model = GROQ_REASONING_MODEL
+        if task == "coding":
+            model = GROQ_CODING_MODEL
 
-    else:
-        model = GROQ_FAST_MODEL
+        elif task in (
+            "reasoning",
+            "math",
+        ):
+            model = GROQ_REASONING_MODEL
+
+        else:
+            model = GROQ_FAST_MODEL
 
     r = groq.chat.completions.create(
         model=model,
         messages=build_messages(
             uid,
             text,
-            task
+            task,
+            max_turns=GROQ_MAX_CONTEXT_TURNS,
+            max_chars_per_item=GROQ_MAX_CONTEXT_CHARS_PER_ITEM,
         ),
-        max_tokens=4096,
+        max_tokens=GROQ_MAX_OUTPUT_TOKENS,
     )
 
     answer = (
@@ -2092,10 +2163,55 @@ def call_groq(uid, text, task):
 
     if not answer.strip():
         raise RuntimeError(
-            "Groq mengembalikan jawaban kosong."
+            f"Groq ({model}) mengembalikan jawaban kosong."
         )
 
     return answer, model
+
+
+def _is_retryable_rate_limit(error_text):
+    """
+    True hanya untuk rate limit yang kemungkinan bersifat sesaat
+    (per-menit/per-request), BUKAN limit harian/kuota yang sudah
+    pasti habis (retry tidak akan membantu untuk itu, cuma buang waktu).
+    """
+
+    t = error_text.lower()
+
+    if "per-day" in t or "per day" in t or "daily" in t:
+        return False
+
+    if "429" in t or "rate limit" in t or "resource_exhausted" in t:
+        return True
+
+    return False
+
+
+def _call_with_retry(fn, retries=1, base_delay=1.5):
+
+    last_err = None
+
+    for attempt in range(retries + 1):
+
+        try:
+
+            return fn()
+
+        except Exception as e:
+
+            last_err = e
+
+            if (
+                attempt == retries
+                or not _is_retryable_rate_limit(str(e))
+            ):
+                raise
+
+            time.sleep(
+                base_delay + random.uniform(0, 1.0)
+            )
+
+    raise last_err
 
 
 # ============================================================
@@ -2130,7 +2246,27 @@ def chat_router(uid, text):
 
     if task == "technical":
 
+        # Prioritas: Groq (kuota harian besar & terpisah per model)
+        # -> OpenRouter -> Gemini.
         providers = [
+            (
+                "Groq (gpt-oss-20b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_FAST_MODEL,
+                ),
+            ),
+            (
+                "Groq (gpt-oss-120b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_REASONING_MODEL,
+                ),
+            ),
             (
                 "OpenRouter Free",
                 lambda: call_openrouter(
@@ -2147,23 +2283,40 @@ def chat_router(uid, text):
                     task
                 ),
             ),
+        ]
+
+    elif task == "coding":
+
+        # Prioritas: model coding khusus dulu, lalu model Groq
+        # lain (kuota terpisah), baru provider lain.
+        providers = [
             (
-                "Groq Free Tier",
+                "Groq (qwen3-32b)",
                 lambda: call_groq(
                     uid,
                     text,
-                    task
+                    task,
+                    model=GROQ_CODING_MODEL,
                 ),
             ),
-        ]
-
-    elif task in (
-        "coding",
-        "reasoning",
-        "math",
-    ):
-
-        providers = [
+            (
+                "Groq (gpt-oss-120b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_REASONING_MODEL,
+                ),
+            ),
+            (
+                "Groq (gpt-oss-20b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_FAST_MODEL,
+                ),
+            ),
             (
                 "OpenRouter Free",
                 lambda: call_openrouter(
@@ -2173,8 +2326,42 @@ def chat_router(uid, text):
                 ),
             ),
             (
-                "Groq Free Tier",
+                "Gemini",
+                lambda: call_gemini(
+                    uid,
+                    text,
+                    task
+                ),
+            ),
+        ]
+
+    elif task in (
+        "reasoning",
+        "math",
+    ):
+
+        providers = [
+            (
+                "Groq (gpt-oss-120b)",
                 lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_REASONING_MODEL,
+                ),
+            ),
+            (
+                "Groq (gpt-oss-20b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_FAST_MODEL,
+                ),
+            ),
+            (
+                "OpenRouter Free",
+                lambda: call_openrouter(
                     uid,
                     text,
                     task
@@ -2192,7 +2379,27 @@ def chat_router(uid, text):
 
     else:
 
+        # general / creative: prioritaskan model dengan kuota
+        # harian paling besar supaya jarang kena limit.
         providers = [
+            (
+                "Groq (gpt-oss-20b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_FAST_MODEL,
+                ),
+            ),
+            (
+                "Groq (gpt-oss-120b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_REASONING_MODEL,
+                ),
+            ),
             (
                 "OpenRouter Free",
                 lambda: call_openrouter(
@@ -2204,14 +2411,6 @@ def chat_router(uid, text):
             (
                 "Gemini",
                 lambda: call_gemini(
-                    uid,
-                    text,
-                    task
-                ),
-            ),
-            (
-                "Groq Free Tier",
-                lambda: call_groq(
                     uid,
                     text,
                     task
@@ -2231,7 +2430,10 @@ def chat_router(uid, text):
                 provider_name,
             )
 
-            answer, model = fn()
+            answer, model = _call_with_retry(
+                fn,
+                retries=1,
+            )
 
             if not answer.strip():
                 raise RuntimeError(
