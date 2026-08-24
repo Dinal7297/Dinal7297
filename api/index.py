@@ -74,6 +74,24 @@ GROQ_CODING_MODEL = os.getenv(
     "qwen/qwen3-32b"
 )
 
+# ------------------------------------------------------------
+# MODEL CADANGAN TAMBAHAN (BARU)
+# ------------------------------------------------------------
+# Tidak dibaca dari env yang mungkin salah/sudah usang di hosting.
+# Ini hanya lapisan cadangan EKSTRA supaya chat tetap jalan walau
+# GROQ_FAST_MODEL / GROQ_REASONING_MODEL / GROQ_CODING_MODEL /
+# OPENROUTER_FREE_MODEL yang di-set lewat env sudah tidak valid
+# (model_not_found / dihapus provider).
+GROQ_BACKUP_MODEL_1 = "openai/gpt-oss-20b"
+GROQ_BACKUP_MODEL_2 = "openai/gpt-oss-120b"
+GROQ_BACKUP_MODEL_3 = "qwen/qwen3-32b"
+GROQ_BACKUP_MODEL_4 = "llama-3.1-8b-instant"
+GROQ_BACKUP_MODEL_5 = "gemma2-9b-it"
+
+OPENROUTER_BACKUP_MODEL = (
+    "meta-llama/llama-3.3-70b-instruct:free"
+)
+
 POLLINATIONS_KEY = os.getenv(
     "POLLINATIONS_API_KEY",
     ""
@@ -2001,15 +2019,17 @@ def classify_task(text):
 # OPENROUTER
 # ============================================================
 
-def call_openrouter(uid, text, task):
+def call_openrouter(uid, text, task, model=None):
 
     if not openrouter:
         raise RuntimeError(
             "OPENROUTER_API_KEY belum tersedia."
         )
 
+    selected = model or OPENROUTER_FREE_MODEL
+
     r = openrouter.chat.completions.create(
-        model=OPENROUTER_FREE_MODEL,
+        model=selected,
         messages=build_messages(
             uid,
             text,
@@ -2031,12 +2051,12 @@ def call_openrouter(uid, text, task):
 
     if not answer.strip():
         raise RuntimeError(
-            "OpenRouter Free mengembalikan jawaban kosong."
+            f"OpenRouter ({selected}) mengembalikan jawaban kosong."
         )
 
     selected_model = (
         getattr(r, "model", None)
-        or OPENROUTER_FREE_MODEL
+        or selected
     )
 
     return answer, selected_model
@@ -2279,6 +2299,42 @@ def chat_router(uid, text):
                 ),
             ),
             (
+                "Groq Cadangan (gpt-oss-20b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_1,
+                ),
+            ),
+            (
+                "Groq Cadangan (gpt-oss-120b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_2,
+                ),
+            ),
+            (
+                "Groq Cadangan (llama-3.1-8b-instant)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_4,
+                ),
+            ),
+            (
+                "OpenRouter Cadangan",
+                lambda: call_openrouter(
+                    uid,
+                    text,
+                    task,
+                    model=OPENROUTER_BACKUP_MODEL,
+                ),
+            ),
+            (
                 "Gemini",
                 lambda: call_gemini(
                     uid,
@@ -2329,6 +2385,33 @@ def chat_router(uid, text):
                 ),
             ),
             (
+                "Groq Cadangan (qwen3-32b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_3,
+                ),
+            ),
+            (
+                "Groq Cadangan (gpt-oss-120b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_2,
+                ),
+            ),
+            (
+                "OpenRouter Cadangan",
+                lambda: call_openrouter(
+                    uid,
+                    text,
+                    task,
+                    model=OPENROUTER_BACKUP_MODEL,
+                ),
+            ),
+            (
                 "Gemini",
                 lambda: call_gemini(
                     uid,
@@ -2371,6 +2454,33 @@ def chat_router(uid, text):
                 ),
             ),
             (
+                "Groq Cadangan (gpt-oss-120b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_2,
+                ),
+            ),
+            (
+                "Groq Cadangan (llama-3.1-8b-instant)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_4,
+                ),
+            ),
+            (
+                "OpenRouter Cadangan",
+                lambda: call_openrouter(
+                    uid,
+                    text,
+                    task,
+                    model=OPENROUTER_BACKUP_MODEL,
+                ),
+            ),
+            (
                 "Gemini",
                 lambda: call_gemini(
                     uid,
@@ -2409,6 +2519,33 @@ def chat_router(uid, text):
                     uid,
                     text,
                     task
+                ),
+            ),
+            (
+                "Groq Cadangan (llama-3.1-8b-instant)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_4,
+                ),
+            ),
+            (
+                "Groq Cadangan (gemma2-9b-it)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_5,
+                ),
+            ),
+            (
+                "OpenRouter Cadangan",
+                lambda: call_openrouter(
+                    uid,
+                    text,
+                    task,
+                    model=OPENROUTER_BACKUP_MODEL,
                 ),
             ),
             (
