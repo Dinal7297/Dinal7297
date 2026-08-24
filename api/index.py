@@ -3560,15 +3560,27 @@ Kemampuan:
 • Sloof
 • Kolom
 • Balok
-• Plat
+• Plat beton
 • Footplat
 • Pondasi
-• Dinding
+• Batu kali
+• Dinding bata
+• Batako
 • Plester
 • Acian
 • Galian
 • Urugan
 • Besi
+• Berat besi
+• Jumlah batang besi
+
+🎨 GENERATE GAMBAR
+
+Cloudflare Flux:
+{'✅ AKTIF' if CLOUDFLARE_ENABLED else '❌ TIDAK AKTIF'}
+
+Pollinations (fallback):
+{'✅ AKTIF' if POLLINATIONS_ENABLED else '❌ TIDAK AKTIF'}
 
 🧠 MODEL
 
