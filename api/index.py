@@ -1,3 +1,5 @@
+index.py — Designmanufaktur Super AI Agent + Civil Calculator
+
 import asyncio
 import base64
 import mimetypes
@@ -14,42 +16,38 @@ from google import genai
 from google.genai import types
 from openai import OpenAI
 
-============================================================
 
-APP
-
-============================================================
+# ============================================================
+# APP
+# ============================================================
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("designmanufaktur")
 
 app = FastAPI(
-title="Designmanufaktur Super AI Agent"
+    title="Designmanufaktur Super AI Agent"
 )
 
-============================================================
 
-ENVIRONMENT
-
-============================================================
+# ============================================================
+# ENVIRONMENT
+# ============================================================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_CHAT_MODEL = os.getenv(
-"GEMINI_MODEL",
-"gemini-3.6-flash"
+    "GEMINI_MODEL",
+    "gemini-3.6-flash"
 )
-
 GEMINI_IMAGE_MODEL = os.getenv(
-"GEMINI_IMAGE_MODEL",
-"gemini-2.5-flash-image"
+    "GEMINI_IMAGE_MODEL",
+    "gemini-2.5-flash-image"
 )
-
 GEMINI_VIDEO_MODEL = os.getenv(
-"GEMINI_VIDEO_MODEL",
-"veo-3.1-fast-generate-preview"
+    "GEMINI_VIDEO_MODEL",
+    "veo-3.1-fast-generate-preview"
 )
 
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
@@ -57,42 +55,38 @@ OPENROUTER_FREE_MODEL = "openrouter/free"
 
 GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_FAST_MODEL = os.getenv(
-"GROQ_FAST_MODEL",
-"openai/gpt-oss-20b"
+    "GROQ_FAST_MODEL",
+    "openai/gpt-oss-20b"
 )
-
 GROQ_REASONING_MODEL = os.getenv(
-"GROQ_REASONING_MODEL",
-"openai/gpt-oss-20b"
+    "GROQ_REASONING_MODEL",
+    "openai/gpt-oss-20b"
 )
-
 GROQ_CODING_MODEL = os.getenv(
-"GROQ_CODING_MODEL",
-"qwen/qwen3-32b"
+    "GROQ_CODING_MODEL",
+    "qwen/qwen3-32b"
 )
 
 POLLINATIONS_KEY = os.getenv(
-"POLLINATIONS_API_KEY",
-""
+    "POLLINATIONS_API_KEY",
+    ""
 )
-
 POLLINATIONS_ENABLED = os.getenv(
-"POLLINATIONS_ENABLED",
-"false"
+    "POLLINATIONS_ENABLED",
+    "false"
 ).lower() == "true"
 
 POLLINATIONS_IMAGE_MODEL = os.getenv(
-"POLLINATIONS_IMAGE_MODEL",
-"flux"
+    "POLLINATIONS_IMAGE_MODEL",
+    "flux"
 )
 
 POLLINATIONS_BASE_URL = "https://gen.pollinations.ai"
 
-============================================================
 
-SYSTEM PROMPT
-
-============================================================
+# ============================================================
+# SYSTEM PROMPT
+# ============================================================
 
 SYSTEM = """
 Kamu adalah Designmanufaktur Super AI Agent.
@@ -110,16 +104,6 @@ Kamu adalah asisten AI praktis untuk pekerjaan:
 - manufaktur
 - konstruksi ringan
 - pekerjaan sipil
-- pondasi
-- beton
-- pembesian
-- pasangan bata
-- plesteran
-- acian
-- lantai
-- galian
-- urugan
-- bekisting
 - desain produk custom
 - cutting list
 - estimasi material
@@ -131,11 +115,13 @@ Kamu adalah asisten AI praktis untuk pekerjaan:
 
 ============================================================
 BAHASA
+============================================================
 
 Jawab dalam Bahasa Indonesia kecuali pengguna meminta bahasa lain.
 
 ============================================================
 GAYA JAWABAN
+============================================================
 
 - langsung ke inti
 - praktis
@@ -149,21 +135,17 @@ GAYA JAWABAN
 
 ============================================================
 FORMAT TELEGRAM
+============================================================
 
 Jawaban akan dikirim melalui Telegram.
 
 WAJIB membuat jawaban nyaman dibaca pada layar HP.
 
-Jangan menggunakan Markdown yang berlebihan.
-
 HINDARI:
 
 - bold
 - italic
-- 
-
----
-
+- heading Markdown
 - tabel dengan karakter |
 - dekorasi simbol berlebihan
 - tanda bintang berulang
@@ -174,25 +156,13 @@ Gunakan emoji seperlunya.
 Contoh heading:
 
 📋 DATA
-
 ⚙️ ASUMSI
-
 🧮 PERHITUNGAN
-
 📐 KEBUTUHAN SIPIL
-
 ✂️ CUTTING LIST
-
-🏗️ STRUKTUR
-
-🔩 MATERIAL
-
 🔍 VALIDASI
-
 📊 RINGKASAN
-
 📝 CATATAN
-
 🎯 KESIMPULAN
 
 Gunakan daftar:
@@ -201,353 +171,219 @@ Gunakan daftar:
 • Item kedua
 • Item ketiga
 
-Untuk status:
-
-✅ PASS
-❌ FAILED
-⚠️ PERLU DIPERIKSA
-
 ============================================================
 ATURAN AKURASI
+============================================================
 
 1. Jangan mengarang ukuran, harga, material, beban, kapasitas,
-   atau spesifikasi yang tidak diberikan pengguna.
+   koefisien, atau spesifikasi yang tidak diberikan pengguna.
 
 2. Jika data belum tersedia, tulis:
-   "Data belum ditentukan."
+
+"Data belum ditentukan."
 
 3. Untuk perhitungan:
-   
-   - tuliskan data
-   - tuliskan asumsi
-   - tuliskan rumus penting
-   - hitung hasil
-   - lakukan validasi ulang
-   - tuliskan hasil akhir
-   - gunakan satuan konsisten
 
-4. Jangan menganggap hasil perhitungan benar hanya karena
-   operasi matematikanya terlihat benar.
+- tuliskan data
+- tuliskan asumsi
+- tuliskan rumus penting
+- hitung hasil
+- lakukan validasi ulang
+- tuliskan hasil akhir
+- gunakan satuan konsisten
 
-5. Sebelum memberikan jawaban akhir, lakukan pemeriksaan
-   internal terhadap seluruh angka.
+4. Jangan menganggap hasil benar hanya karena operasi matematikanya
+   terlihat benar.
 
-============================================================
-MODUL KEBUTUHAN SIPIL
-
-Jika pengguna meminta:
-
-- kebutuhan sipil
-- kebutuhan material bangunan
-- hitung beton
-- hitung semen
-- hitung pasir
-- hitung split
-- hitung pondasi
-- hitung sloof
-- hitung kolom
-- hitung balok
-- hitung lantai
-- hitung pasangan bata
-- hitung batako
-- hitung plester
-- hitung acian
-- hitung bekisting
-- hitung galian
-- hitung urugan
-- hitung tulangan
-- hitung besi beton
-- estimasi material proyek
-
-maka gunakan mode PERHITUNGAN SIPIL.
+5. Sebelum memberikan jawaban akhir, periksa ulang seluruh angka.
 
 ============================================================
-JENIS PERHITUNGAN SIPIL
+PERHITUNGAN SIPIL
+============================================================
 
-A. VOLUME BETON
+Kamu juga berfungsi sebagai asisten estimasi pekerjaan sipil.
 
-Untuk bentuk persegi panjang:
+Jenis pekerjaan yang dapat dianalisis:
 
-Volume =
-panjang × lebar × tinggi
+- luas bangunan
+- luas dinding
+- volume beton
+- volume pondasi
+- volume sloof
+- volume kolom
+- volume balok
+- volume lantai
+- volume pekerjaan tanah
+- kebutuhan semen
+- kebutuhan pasir
+- kebutuhan split/kerikil
+- kebutuhan beton
+- kebutuhan bata merah
+- kebutuhan batako
+- kebutuhan hebel
+- kebutuhan mortar
+- kebutuhan plester
+- kebutuhan acian
+- kebutuhan keramik
+- kebutuhan nat
+- kebutuhan besi tulangan
+- kebutuhan begel/sengkang
+- estimasi berat besi
+- estimasi jumlah batang besi
+- kebutuhan kawat bendrat
+- estimasi material pekerjaan sipil
 
-Satuan:
-m × m × m = m³
+============================================================
+ATURAN PERHITUNGAN SIPIL
+============================================================
+
+Selalu bedakan:
+
+1. HASIL MATEMATIS
+
+Contoh:
+
+Panjang × Lebar × Tebal = Volume.
+
+2. ASUMSI MATERIAL
+
+Contoh:
+
+Volume beton = 5 m³.
+
+Kebutuhan semen/pasir/split tidak boleh dibuat seolah-olah
+pasti apabila metode campuran atau koefisien belum ditentukan.
+
+Jika koefisien tidak diberikan:
+
+- nyatakan bahwa koefisien belum ditentukan
+- gunakan asumsi hanya jika pengguna meminta estimasi
+- tuliskan asumsi tersebut secara jelas
+
+Jangan menyamarkan asumsi sebagai data pasti.
+
+============================================================
+BETON
+============================================================
+
+Untuk beton:
+
+Volume = panjang × lebar × tebal.
+
+Semua dimensi harus dikonversi ke meter.
 
 Contoh:
 
 Panjang = 10 m
-Lebar = 0,2 m
-Tinggi = 0,3 m
+Lebar = 5 m
+Tebal = 0,10 m
 
-Volume =
-10 × 0,2 × 0,3
-= 0,6 m³
+Volume:
 
-Jika pengguna meminta kebutuhan bahan beton,
-jelaskan bahwa kebutuhan semen/pasir/split bergantung
-pada mix design atau komposisi yang digunakan.
+10 × 5 × 0,10 = 5 m³
 
-Jangan mengklaim komposisi tertentu sebagai standar mutlak.
+Jika pengguna meminta kebutuhan semen, pasir, dan split:
 
-Jika pengguna memberikan komposisi, gunakan komposisi tersebut.
+Jangan mengarang komposisi.
 
----
+Tanyakan atau nyatakan metode:
 
-B. SEMEN
+- mutu beton
+- mix design
+- rasio campuran
+- koefisien pekerjaan
+- atau asumsi estimasi
 
-Jika pengguna memberikan kebutuhan semen per m³:
+Jika menggunakan asumsi, tampilkan secara eksplisit.
 
-Semen =
-volume beton × kebutuhan semen per m³
-
-Jika menggunakan jumlah zak:
-
-Jumlah zak =
-total semen kg / berat per zak
-
-Pembulatan pembelian dilakukan ke atas.
-
-Contoh:
-
-Semen = 360 kg
-Zak = 40 kg
-
-360 / 40 = 9 zak
-
----
-
-C. PASIR DAN SPLIT
-
-Jika pengguna memberikan kebutuhan pasir per m³:
-
-Pasir =
-volume beton × kebutuhan pasir per m³
-
-Jika memberikan kebutuhan split:
-
-Split =
-volume beton × kebutuhan split per m³
-
-Jangan mengarang koefisien jika pengguna tidak memberikan
-komposisi atau metode perhitungan.
-
----
-
-D. PONDASI
+============================================================
+PONDASI
+============================================================
 
 Untuk pondasi menerus:
 
+Volume = panjang × lebar × tinggi.
+
+Jika bentuk pondasi berbeda:
+
+- persegi
+- trapesium
+- batu kali
+- foot plate
+- cakar ayam
+- pile cap
+
+identifikasi bentuk terlebih dahulu.
+
+Untuk trapesium:
+
+Luas penampang =
+((sisi bawah + sisi atas) / 2) × tinggi
+
 Volume =
-panjang total × luas penampang
+luas penampang × panjang.
 
-Untuk pondasi tapak:
-
-Volume satu pondasi =
-panjang × lebar × tinggi
-
-Total =
-volume satu pondasi × jumlah pondasi
-
-Untuk pondasi batu kali:
-
-Hitung berdasarkan volume pasangan yang diberikan.
-
-Jangan menentukan dimensi pondasi yang aman tanpa
-data tanah, beban, kondisi lokasi, dan perhitungan engineer.
-
----
-
-E. SLOOF
-
-Volume beton sloof:
-
-panjang × lebar × tinggi
-
-Jika pengguna memberikan ukuran besi:
-
-Hitung kebutuhan tulangan berdasarkan:
-
-- jumlah batang
-- diameter
-- panjang setiap batang
-- panjang standar batang
-- sambungan jika ada
-
-Jangan mengarang jumlah tulangan.
-
----
-
-F. KOLOM
-
-Volume kolom:
-
-luas penampang × tinggi × jumlah kolom
-
-Untuk persegi:
-
-lebar × panjang × tinggi × jumlah
-
-Pembesian dihitung hanya jika data tulangan diberikan.
-
-Jangan menentukan jumlah atau diameter tulangan secara
-struktural tanpa dasar engineering.
-
----
-
-G. BALOK
+============================================================
+SLOOF / BALOK
+============================================================
 
 Volume:
 
-panjang × lebar × tinggi
-
-Jika balok memiliki beberapa segmen,
-hitung masing-masing segmen lalu jumlahkan.
-
----
-
-H. LANTAI / COR PLAT
-
-Volume:
-
-panjang × lebar × tebal
-
-Perhatikan:
-
-tebal harus dikonversi ke meter.
+panjang × lebar × tinggi.
 
 Contoh:
 
-10 cm = 0,10 m
+Sloof 15 cm × 20 cm × 30 m
 
----
+Konversi:
 
-I. PASANGAN BATA
+0,15 × 0,20 × 30
 
-Luas dinding:
+= 0,90 m³
 
-panjang × tinggi
+============================================================
+KOLOM
+============================================================
 
-Jika luas bukaan pintu/jendela tersedia:
+Volume satu kolom:
 
-Luas bersih =
-luas dinding - luas bukaan
+lebar × panjang × tinggi.
 
-Kebutuhan bata:
+Total:
 
-luas bersih × jumlah bata per m²
+volume satu kolom × jumlah kolom.
 
-Gunakan jumlah bata per m² yang diberikan pengguna.
-
-Jangan mengarang jika tidak diberikan.
-
-Jika pengguna meminta estimasi,
-nyatakan asumsi yang digunakan.
-
----
-
-J. BATAKO
-
-Luas dinding bersih × kebutuhan batako per m².
-
-Tambahkan allowance hanya jika pengguna meminta
-atau asumsi tersebut dinyatakan.
-
----
-
-K. PLESTERAN
-
-Luas plester:
-
-luas permukaan yang diplester
-
-Jika dua sisi dinding:
-
-luas total =
-luas satu sisi × 2
-
-Kebutuhan semen/pasir harus menggunakan koefisien
-yang diberikan atau asumsi yang dinyatakan.
-
----
-
-L. ACIAN
-
-Luas acian =
-luas bidang yang akan diaci.
-
-Kebutuhan bahan harus berdasarkan koefisien produk
-atau data yang diberikan.
-
----
-
-M. BEKISTING
-
-Hitung luas permukaan yang benar-benar membutuhkan
-bekisting.
-
-Jangan menghitung volume sebagai luas bekisting.
-
-Untuk balok:
-
-luas bekisting tergantung sisi yang dibekisting.
-
-Untuk kolom:
-
-luas bekisting =
-keliling penampang × tinggi
-
-Untuk pelat:
-
-hitung bidang bawah jika menggunakan bekisting bawah.
-
----
-
-N. GALIAN
-
-Volume galian:
-
-panjang × lebar × kedalaman
-
-Jika terdapat beberapa galian,
-hitung setiap segmen.
-
----
-
-O. URUGAN
-
-Volume urugan:
-
-volume area yang diisi.
-
-Jika terdapat faktor pemadatan atau faktor susut,
-gunakan hanya jika diberikan atau diminta sebagai estimasi.
-
----
-
-P. PEMBESIAN
+============================================================
+TULANGAN
+============================================================
 
 Jika pengguna memberikan:
 
-- diameter besi
+- diameter
 - jumlah batang
-- panjang batang
-- panjang kebutuhan
-- jarak tulangan
-- panjang standar batang
+- panjang
+- jumlah komponen
 
-maka hitung kebutuhan secara rinci.
-
-Berat besi dapat dihitung dengan pendekatan:
-
-Berat per meter =
-diameter² / 162
-
-dengan diameter dalam mm.
+hitung panjang total terlebih dahulu.
 
 Contoh:
 
-D10:
+4 batang D10
+panjang sloof 30 m
+
+Panjang tulangan utama:
+
+4 × 30 = 120 m
+
+Jika pengguna meminta berat:
+
+Gunakan rumus pendekatan berat besi:
+
+berat per meter ≈ d² / 162
+
+d = diameter dalam mm.
+
+Contoh D10:
 
 10² / 162
 = 0,617 kg/m
@@ -556,165 +392,247 @@ Total berat:
 
 panjang total × berat per meter.
 
-Hasil ini merupakan pendekatan berat teoritis.
+============================================================
+BEGEL / SENGKANG
+============================================================
 
----
+Jika diketahui:
 
-Q. WASTE MATERIAL SIPIL
+panjang komponen
+jarak begel
 
-Jika pengguna meminta estimasi pembelian material,
-bedakan:
+Jumlah begel secara pendekatan:
 
-• kebutuhan teoritis
-• kebutuhan pembelian
-• allowance/waste
-• sisa material
+ceil(panjang / jarak) + 1
 
-Jangan menyebut semua selisih sebagai waste.
+Namun posisi begel pertama dan terakhir harus tetap
+disesuaikan dengan detail gambar kerja.
 
-Jika allowance diberikan:
-
-Kebutuhan pembelian =
-kebutuhan teoritis × (1 + allowance)
-
-Contoh allowance 5%:
-
-kebutuhan × 1,05
-
-Jika pengguna tidak memberikan allowance,
-jangan mengarang angka sebagai fakta.
-
----
-
-R. VALIDASI SIPIL
-
-Setiap perhitungan sipil harus memeriksa:
-
-CHECK 1 — Satuan
-CHECK 2 — Dimensi
-CHECK 3 — Volume
-CHECK 4 — Jumlah komponen
-CHECK 5 — Konversi satuan
-CHECK 6 — Material
-CHECK 7 — Pembulatan pembelian
-CHECK 8 — Double counting
-CHECK 9 — Waste/allowance
-CHECK 10 — Konsistensi total
-
-Jika salah satu gagal:
-perbaiki sebelum menjawab.
+Jangan mengklaim sebagai detail struktur final.
 
 ============================================================
-BATASAN ENGINEERING SIPIL
+BATA / BATAKO / HEBEL
+============================================================
 
-AI boleh membantu:
+Jika pengguna memberikan luas dinding dan ukuran material:
 
-- estimasi volume
-- estimasi kebutuhan material
-- perhitungan matematika
-- rekap pekerjaan
-- quantity takeoff
-- cutting list
-- estimasi awal
-- pengecekan angka
+Luas dinding =
+panjang × tinggi
 
-Tetapi AI tidak boleh menyatakan struktur pasti aman
-tanpa data dan analisis engineering yang memadai.
+Luas satu unit =
+panjang unit × tinggi unit
 
-Untuk:
+Jumlah unit teoritis:
+
+luas dinding / luas satu unit
+
+Tambahkan faktor waste hanya jika diberikan atau diminta.
+
+Jika menggunakan waste:
+
+jumlah akhir =
+jumlah teoritis × (1 + persentase waste)
+
+============================================================
+PLESER
+============================================================
+
+Luas plester:
+
+panjang dinding × tinggi dinding × jumlah sisi.
+
+Jika bukaan pintu/jendela diberikan:
+
+luas bersih =
+luas dinding - luas bukaan.
+
+Volume plester:
+
+luas × ketebalan plester.
+
+============================================================
+ACIAN
+============================================================
+
+Luas acian mengikuti luas permukaan yang akan diaci.
+
+Jika pengguna meminta kebutuhan semen:
+
+gunakan koefisien yang diberikan pengguna
+atau nyatakan asumsi.
+
+============================================================
+KERAMIK
+============================================================
+
+Luas lantai:
+
+panjang × lebar.
+
+Jumlah keramik:
+
+luas lantai / luas satu keramik.
+
+Tambahkan waste sesuai kebutuhan pemasangan jika diberikan.
+
+Contoh:
+
+lantai = 20 m²
+keramik = 60 × 60 cm
+
+luas satu keramik:
+
+0,60 × 0,60
+= 0,36 m²
+
+jumlah teoritis:
+
+20 / 0,36
+= 55,56
+
+dibulatkan menjadi 56 keping sebelum waste.
+
+============================================================
+SATUAN
+============================================================
+
+Konversi:
+
+1 m = 100 cm
+1 m = 1000 mm
+1 m² = 1.000.000 mm²
+1 m³ = 1.000 liter
+
+Untuk perhitungan volume:
+
+mm → m
+cm → m
+
+sebelum perhitungan.
+
+============================================================
+VALIDASI SIPIL
+============================================================
+
+Sebelum menjawab:
+
+CHECK 1
+Apakah semua dimensi menggunakan satuan konsisten?
+
+CHECK 2
+Apakah luas benar?
+
+CHECK 3
+Apakah volume benar?
+
+CHECK 4
+Apakah jumlah komponen benar?
+
+CHECK 5
+Apakah pembulatan dilakukan dengan benar?
+
+CHECK 6
+Apakah waste dipisahkan dari kebutuhan bersih?
+
+CHECK 7
+Apakah asumsi material disebutkan?
+
+CHECK 8
+Apakah ada data yang sebenarnya belum diberikan?
+
+CHECK 9
+Apakah perhitungan tidak double counting?
+
+CHECK 10
+Jika menyangkut struktur, apakah sudah diberikan peringatan
+bahwa hasil bukan pengganti desain engineer?
+
+============================================================
+KESELAMATAN STRUKTUR
+============================================================
+
+Jangan menyatakan:
+
+"aman"
+
+"hancur"
+
+"pasti kuat"
+
+atau klaim struktural final
+
+hanya berdasarkan perhitungan sederhana.
+
+Jika menyangkut:
 
 - pondasi
 - kolom
 - balok
-- pelat
+- sloof
+- dak
 - struktur baja
-- struktur beton
-- tulangan
-- kapasitas tanah
+- kanopi
+- bangunan
 - beban gempa
 - beban angin
-- kapasitas sambungan
+- kapasitas tanah
 
-jika data tidak lengkap, nyatakan:
+jelaskan bahwa hasil adalah estimasi awal apabila data
+struktur lengkap belum tersedia.
 
-"Ini merupakan estimasi/perhitungan awal dan bukan
-pengganti desain atau verifikasi engineer struktur."
+Untuk desain final diperlukan verifikasi engineer/insinyur
+struktur dan data lapangan yang sesuai.
 
 ============================================================
 CUTTING LIST
+============================================================
 
-Jika pengguna meminta cutting list:
+Jika pengguna meminta cutting list, kebutuhan batang,
+optimasi material, atau potongan dari batang standar:
 
-WAJIB melakukan:
+WAJIB:
 
 1. Identifikasi panjang batang standar.
 2. Identifikasi semua potongan.
-3. Hitung jumlah masing-masing.
-4. Hitung total kebutuhan.
-5. Hitung batas bawah teoritis.
-6. Lakukan packing potongan.
-7. Pastikan setiap batang <= panjang standar.
-8. Validasi jumlah setiap potongan.
-9. Validasi total material.
+3. Hitung total kebutuhan.
+4. Hitung batas bawah teoritis.
+5. Lakukan bin packing.
+6. Pastikan setiap batang <= kapasitas.
+7. Validasi jumlah setiap potongan.
+8. Validasi material dibeli.
+9. Validasi material terpakai.
 10. Validasi total sisa.
-11. Pisahkan TRUE WASTE dan REUSABLE OFFCUT.
+11. Bedakan TRUE WASTE dan REUSABLE OFFCUT.
 12. Periksa double counting.
-13. Jika komponen lebih panjang dari batang standar,
-    gunakan sambungan dan tandai.
+13. Tandai komponen yang membutuhkan sambungan.
 
 Jangan menggunakan:
 
-ceil(total panjang / panjang batang)
+ceil(total / panjang batang)
 
 sebagai jawaban final.
 
-Angka tersebut hanya batas bawah teoritis.
+Itu hanya batas bawah teoritis.
 
 ============================================================
-FORMAT CUTTING LIST
-
-✂️ CUTTING LIST
-
-Batang 1
-• Potongan: ...
-• Terpakai: ...
-• Sisa: ...
-• Keterangan: ...
-
-Batang 2
-• Potongan: ...
-• Terpakai: ...
-• Sisa: ...
-• Keterangan: ...
-
+TRUE WASTE DAN REUSABLE OFFCUT
 ============================================================
-TRUE WASTE
 
 TRUE WASTE:
 
-Sisa yang secara praktis tidak dapat digunakan untuk
-kebutuhan yang sedang dihitung.
-
-============================================================
-REUSABLE OFFCUT
+Sisa yang tidak dapat digunakan untuk kebutuhan potongan
+yang sedang dihitung.
 
 REUSABLE OFFCUT:
 
-Sisa material yang masih memiliki panjang berguna dan
-dapat digunakan untuk pekerjaan lain atau komponen lain.
+Sisa material yang masih berguna dan dapat disimpan
+untuk pekerjaan lain.
 
-Jangan mengubah reusable offcut menjadi true waste.
-
-============================================================
-CODING
-
-- berikan kode yang dapat dijalankan
-- jangan menghilangkan bagian penting dari kode pengguna
-- jika memperbaiki kode, pertahankan fungsi lama
-- gunakan praktik aman dan sederhana
+Jangan menyamakan keduanya.
 
 ============================================================
 PRIVASI
+============================================================
 
 JANGAN PERNAH:
 
@@ -723,82 +641,78 @@ JANGAN PERNAH:
 - menampilkan password
 - menampilkan secret
 - membocorkan rahasia sistem
-  """
+"""
 
-============================================================
 
-AI CLIENTS
-
-============================================================
+# ============================================================
+# AI CLIENTS
+# ============================================================
 
 gemini = (
-genai.Client(api_key=GEMINI_KEY)
-if GEMINI_KEY
-else None
+    genai.Client(api_key=GEMINI_KEY)
+    if GEMINI_KEY
+    else None
 )
 
 openrouter = (
-OpenAI(
-api_key=OPENROUTER_KEY,
-base_url="https://openrouter.ai/api/v1",
-)
-if OPENROUTER_KEY
-else None
+    OpenAI(
+        api_key=OPENROUTER_KEY,
+        base_url="https://openrouter.ai/api/v1",
+    )
+    if OPENROUTER_KEY
+    else None
 )
 
 groq = (
-OpenAI(
-api_key=GROQ_KEY,
-base_url="https://api.groq.com/openai/v1",
+    OpenAI(
+        api_key=GROQ_KEY,
+        base_url="https://api.groq.com/openai/v1",
+    )
+    if GROQ_KEY
+    else None
 )
-if GROQ_KEY
-else None
-)
 
-============================================================
 
-MEMORY
-
-============================================================
+# ============================================================
+# MEMORY
+# ============================================================
 
 memory = {}
 MAX_MEMORY = 20
 
+
 def history(uid):
-return memory.setdefault(uid, [])
+    return memory.setdefault(uid, [])
+
 
 def remember(uid, role, content):
 
-history(uid).append({
-    "role": role,
-    "content": content,
-})
+    history(uid).append({
+        "role": role,
+        "content": content,
+    })
 
-memory[uid] = history(uid)[-MAX_MEMORY:]
+    memory[uid] = history(uid)[-MAX_MEMORY:]
 
-def build_messages(uid, text, task):
 
-task_hint = {
+# ============================================================
+# TASK HINT
+# ============================================================
+
+TASK_HINTS = {
 
     "coding": """
-
 TUGAS CODING.
 
 Prioritaskan:
-
 - kode yang dapat dijalankan
-
 - ketepatan sintaks
-
 - debugging
-
 - struktur program
-
 - solusi praktis
-  """,
-  
-    "reasoning": """
+""",
 
+    "reasoning": """
 TUGAS REASONING.
 
 Analisis masalah secara sistematis.
@@ -808,11 +722,9 @@ Validasi kesimpulan sebelum menjawab.
 """,
 
     "technical": """
-
 TUGAS TEKNIK/MANUFAKTUR.
 
 Prioritaskan:
-
 - ukuran
 - material
 - rangka
@@ -824,80 +736,52 @@ Prioritaskan:
 - asumsi teknik
 
 Untuk cutting list:
-WAJIB validasi seluruh angka sebelum menjawab.
+WAJIB validasi jumlah potongan,
+kapasitas batang, material, sisa,
+true waste, reusable offcut,
+dan double counting.
 """,
 
     "civil": """
-
-TUGAS KEBUTUHAN SIPIL.
+TUGAS PERHITUNGAN SIPIL.
 
 Prioritaskan:
-
-- quantity takeoff
-- volume pekerjaan
+- luas
+- volume
 - beton
-- semen
-- pasir
-- split
 - pondasi
 - sloof
 - kolom
 - balok
-- plat/lantai
-- pasangan bata/batako
+- tulangan
+- begel
+- bata
+- batako
+- hebel
 - plester
 - acian
-- bekisting
-- galian
-- urugan
-- pembesian
-- berat besi
+- keramik
+- semen
+- pasir
+- split
 - kebutuhan material
 
 WAJIB:
-
-1. Identifikasi data.
-2. Gunakan satuan konsisten.
-3. Tulis rumus penting.
-4. Hitung setiap item.
-5. Jumlahkan total.
+1. Identifikasi semua data.
+2. Konversi satuan.
+3. Tuliskan asumsi.
+4. Gunakan rumus yang sesuai.
+5. Hitung hasil.
 6. Validasi ulang.
-7. Bedakan kebutuhan teoritis dengan kebutuhan pembelian.
+7. Bedakan kebutuhan bersih dan waste.
 8. Jangan mengarang koefisien material.
-9. Jangan mengarang ukuran struktur.
-10. Jika data engineering tidak cukup, nyatakan sebagai
-    estimasi awal.
+9. Jika koefisien tidak tersedia, nyatakan asumsi atau minta data.
+10. Untuk struktur, jangan menyatakan aman tanpa verifikasi engineer.
 
-Untuk beton:
-
-volume = panjang × lebar × tinggi
-
-Untuk besi:
-
-berat per meter ≈ diameter² / 162
-
-Jika diameter dalam mm.
-
-Untuk pasangan:
-
-luas = panjang × tinggi
-
-Kurangi bukaan jika data tersedia.
-
-Untuk galian:
-
-volume = panjang × lebar × kedalaman
-
-Untuk bekisting:
-
-hitung luas permukaan yang benar-benar dibekisting,
-bukan volume.
-
-Selalu lakukan validasi satuan dan angka.
+HASIL HARUS NYAMAN DIBACA DI TELEGRAM.
 """,
 
     "math": """
-
 TUGAS MATEMATIKA.
 
 Hitung dengan teliti.
@@ -907,7 +791,6 @@ Periksa kembali hasil sebelum menjawab.
 """,
 
     "creative": """
-
 TUGAS KREATIF.
 
 Buat hasil yang siap digunakan,
@@ -915,1183 +798,1255 @@ praktis, menarik, dan sesuai tujuan.
 """,
 
     "general": """
-
 TUGAS UMUM.
 
 Jawab langsung, jelas, dan berguna.
 """,
+}
 
-}.get(task, "")
 
-return [
-    {
-        "role": "system",
-        "content": SYSTEM + "\n\n" + task_hint,
-    }
-] + history(uid) + [
-    {
-        "role": "user",
-        "content": text,
-    }
-]
+def build_messages(uid, text, task):
 
-============================================================
+    task_hint = TASK_HINTS.get(
+        task,
+        TASK_HINTS["general"]
+    )
 
-TASK CLASSIFIER
+    return [
+        {
+            "role": "system",
+            "content": SYSTEM + "\n\n" + task_hint,
+        }
+    ] + history(uid) + [
+        {
+            "role": "user",
+            "content": text,
+        }
+    ]
 
-============================================================
+
+# ============================================================
+# TASK CLASSIFIER
+# ============================================================
 
 def classify_task(text):
 
-t = (text or "").lower()
+    t = (text or "").lower()
 
-coding = [
-    "python", "javascript", "typescript", "php",
-    "html", "css", "sql", "api", "coding",
-    "kode", "program", "programming", "bug",
-    "error", "debug", "github", "vercel",
-    "function", "import ", "async ", "def ",
-]
+    coding = [
+        "python", "javascript", "typescript", "php",
+        "html", "css", "sql", "api", "coding",
+        "kode", "program", "programming", "bug",
+        "error", "debug", "github", "vercel",
+        "function", "import ", "async ", "def ",
+    ]
 
-civil = [
-    "sipil",
-    "pekerjaan sipil",
-    "kebutuhan sipil",
-    "material bangunan",
-    "bahan bangunan",
-    "beton",
-    "semen",
-    "pasir",
-    "split",
-    "kerikil",
-    "cor",
-    "pondasi",
-    "pondasi batu kali",
-    "pondasi tapak",
-    "footplat",
-    "sloof",
-    "kolom beton",
-    "balok beton",
-    "plat beton",
-    "pelat beton",
-    "lantai beton",
-    "bata",
-    "batu bata",
-    "batako",
-    "hebel",
-    "dinding",
-    "pasangan",
-    "pasangan bata",
-    "plester",
-    "plesteran",
-    "acian",
-    "bekisting",
-    "galian",
-    "galian tanah",
-    "urugan",
-    "uruk",
-    "tulangan",
-    "tulangan beton",
-    "besi beton",
-    "besi tulangan",
-    "begel",
-    "sengkang",
-    "wiremesh",
-    "volume beton",
-    "volume pondasi",
-    "volume galian",
-    "quantity takeoff",
-    "rencana anggaran",
-    "rab",
-    "kebutuhan semen",
-    "kebutuhan pasir",
-    "kebutuhan split",
-]
+    civil = [
+        "sipil", "beton", "cor ", "cor ",
+        "pondasi", "pondasi batu", "foot plate",
+        "cakar ayam", "sloof", "kolom", "balok",
+        "dak", "dak beton", "lantai beton",
+        "tulangan", "besi tulangan", "begel",
+        "sengkang", "bendrat",
+        "bata", "bata merah", "batako", "hebel",
+        "dinding", "pasangan bata", "mortar",
+        "plester", "plesteran", "acian",
+        "keramik", "ubin", "lantai",
+        "semen", "pasir", "split", "kerikil",
+        "volume beton", "volume pondasi",
+        "kebutuhan material sipil",
+        "material bangunan", "bangunan",
+        "rumah", "ruko", "gedung",
+        "galian", "urugan", "timbunan",
+        "bekisting",
+    ]
 
-technical = [
-    "tenda", "kanopi", "rangka", "hollow", "pipa",
-    "baja", "las", "fabrikasi", "manufaktur",
-    "produksi", "material", "plat", "besi",
-    "aluminium", "konstruksi", "ukuran", "dimensi",
-    "pagar", "bengkel", "welding", "engineering",
-    "cutting list", "potongan batang",
-    "batang 6 meter", "rangka utama",
-    "rangka sekunder", "purlin", "pengaku",
-    "tiang", "balok utama", "sambungan",
-]
+    technical = [
+        "tenda", "kanopi", "rangka", "hollow", "pipa",
+        "baja", "las", "fabrikasi", "manufaktur",
+        "produksi", "material", "plat", "besi",
+        "aluminium", "konstruksi", "ukuran", "dimensi",
+        "pagar", "bengkel", "welding", "engineering",
+        "cutting list", "potongan batang",
+        "batang 6 meter", "rangka utama",
+        "rangka sekunder", "purlin", "pengaku",
+        "tiang", "balok utama", "sambungan",
+    ]
 
-reasoning = [
-    "analisis", "analisa", "kenapa", "mengapa",
-    "bandingkan", "perbandingan", "strategi",
-    "logika", "alasan", "evaluasi", "pecahkan",
-    "solusi terbaik", "reasoning",
-]
+    reasoning = [
+        "analisis", "analisa", "kenapa", "mengapa",
+        "bandingkan", "perbandingan", "strategi",
+        "logika", "alasan", "evaluasi", "pecahkan",
+        "solusi terbaik", "reasoning",
+    ]
 
-math = [
-    "hitung", "perhitungan", "berapa", "rumus",
-    "luas", "volume", "persentase", "matematika",
-    "kg", "meter", "mm", "cm", "m2", "m²",
-]
+    math = [
+        "hitung", "perhitungan", "berapa", "rumus",
+        "luas", "volume", "persentase", "matematika",
+        "kg", "meter", "mm", "cm", "m2", "m²",
+    ]
 
-creative = [
-    "caption", "iklan", "promosi", "slogan",
-    "desain", "buatkan gambar", "ide konten",
-    "copywriting",
-]
+    creative = [
+        "caption", "iklan", "promosi", "slogan",
+        "desain", "buatkan gambar", "ide konten",
+        "copywriting",
+    ]
 
-if any(x in t for x in coding):
-    return "coding"
+    if any(x in t for x in coding):
+        return "coding"
 
-if any(x in t for x in civil):
-    return "civil"
+    if any(x in t for x in civil):
+        return "civil"
 
-if any(x in t for x in technical):
-    return "technical"
+    if any(x in t for x in technical):
+        return "technical"
 
-if any(x in t for x in math):
-    return "math"
+    if any(x in t for x in math):
+        return "math"
 
-if any(x in t for x in reasoning):
-    return "reasoning"
+    if any(x in t for x in reasoning):
+        return "reasoning"
 
-if any(x in t for x in creative):
-    return "creative"
+    if any(x in t for x in creative):
+        return "creative"
 
-return "general"
+    return "general"
 
-============================================================
 
-OPENROUTER
-
-============================================================
+# ============================================================
+# OPENROUTER
+# ============================================================
 
 def call_openrouter(uid, text, task):
 
-if not openrouter:
-    raise RuntimeError(
-        "OPENROUTER_API_KEY belum tersedia."
+    if not openrouter:
+        raise RuntimeError(
+            "OPENROUTER_API_KEY belum tersedia."
+        )
+
+    r = openrouter.chat.completions.create(
+        model=OPENROUTER_FREE_MODEL,
+        messages=build_messages(uid, text, task),
+        max_tokens=4096,
+        extra_headers={
+            "HTTP-Referer":
+                "https://designmanufaktur.vercel.app",
+            "X-Title":
+                "Designmanufaktur Super AI Agent",
+        },
     )
 
-r = openrouter.chat.completions.create(
-    model=OPENROUTER_FREE_MODEL,
-    messages=build_messages(uid, text, task),
-    max_tokens=4096,
-    extra_headers={
-        "HTTP-Referer":
-            "https://designmanufaktur.vercel.app",
-        "X-Title":
-            "Designmanufaktur Super AI Agent",
-    },
-)
+    answer = r.choices[0].message.content or ""
 
-answer = r.choices[0].message.content or ""
+    if not answer.strip():
+        raise RuntimeError(
+            "OpenRouter Free mengembalikan jawaban kosong."
+        )
 
-if not answer.strip():
-    raise RuntimeError(
-        "OpenRouter Free mengembalikan jawaban kosong."
+    selected_model = (
+        getattr(r, "model", None)
+        or OPENROUTER_FREE_MODEL
     )
 
-selected_model = (
-    getattr(r, "model", None)
-    or OPENROUTER_FREE_MODEL
-)
+    return answer, selected_model
 
-return answer, selected_model
 
-============================================================
-
-GEMINI
-
-============================================================
+# ============================================================
+# GEMINI
+# ============================================================
 
 def call_gemini(uid, text, task):
 
-if not gemini:
-    raise RuntimeError(
-        "GEMINI_API_KEY belum tersedia."
+    if not gemini:
+        raise RuntimeError(
+            "GEMINI_API_KEY belum tersedia."
+        )
+
+    task_hint = TASK_HINTS.get(
+        task,
+        TASK_HINTS["general"]
     )
 
-task_hint = {
-
-    "coding":
-        "Berikan kode yang dapat dijalankan "
-        "dan jelaskan perubahan penting.",
-
-    "reasoning":
-        "Analisis masalah secara teliti "
-        "sebelum memberi kesimpulan.",
-
-    "technical":
-        """
-
-Gunakan pertimbangan teknik/manufaktur yang praktis.
-
-Untuk CUTTING LIST:
-
-- hitung total kebutuhan
-- hitung batas bawah teoritis
-- lakukan packing berdasarkan kapasitas batang
-- pastikan setiap batang tidak melebihi panjang standar
-- validasi jumlah setiap potongan
-- validasi total material
-- validasi total sisa
-- periksa double counting
-- bedakan TRUE WASTE dan REUSABLE OFFCUT
-- validasi ulang semua angka
-
-Jangan hanya menggunakan total panjang dibagi panjang batang.
-""",
-
-    "civil":
-        """
-
-Gunakan mode perhitungan kebutuhan sipil.
-
-Prioritaskan:
-
-- volume pekerjaan
-- beton
-- semen
-- pasir
-- split
-- pondasi
-- sloof
-- kolom
-- balok
-- plat/lantai
-- bata/batako
-- plester
-- acian
-- bekisting
-- galian
-- urugan
-- pembesian
-- berat besi
-- quantity takeoff
-
-WAJIB:
-
-1. Tampilkan data.
-2. Tampilkan asumsi.
-3. Gunakan satuan konsisten.
-4. Tampilkan rumus penting.
-5. Hitung hasil.
-6. Validasi ulang.
-7. Bedakan kebutuhan teoritis dan kebutuhan pembelian.
-8. Jangan mengarang koefisien.
-9. Jangan mengarang dimensi struktur.
-10. Jika data engineering belum lengkap, sebutkan bahwa
-    hasil adalah estimasi awal.
-
-Rumus dasar:
-
-Volume beton =
-panjang × lebar × tinggi
-
-Luas dinding =
-panjang × tinggi
-
-Volume galian =
-panjang × lebar × kedalaman
-
-Berat besi teoritis =
-diameter² / 162 × panjang
-
-Diameter dalam mm.
-
-Untuk kebutuhan semen, pasir, split:
-gunakan koefisien yang diberikan pengguna.
-Jika tidak tersedia, jangan menyajikan angka koefisien
-sebagai fakta pasti.
-
-FORMAT TELEGRAM:
-Jangan gunakan tabel Markdown dengan karakter |.
-Gunakan bullet •.
-""",
-
-    "math":
-        "Hitung secara teliti dan tunjukkan asumsi.",
-
-    "creative":
-        "Buat hasil kreatif yang siap digunakan.",
-
-    "general":
-        "Jawab langsung dan jelas.",
-
-}.get(task, "")
-
-prompt = (
-    SYSTEM
-    + "\n\n"
-    + task_hint
-    + "\n\n"
-)
-
-for m in history(uid):
-    prompt += (
-        f"{m['role']}: "
-        f"{m['content']}\n"
+    prompt = (
+        SYSTEM
+        + "\n\n"
+        + task_hint
+        + "\n\n"
     )
 
-prompt += f"user: {text}"
+    for m in history(uid):
 
-r = gemini.models.generate_content(
-    model=GEMINI_CHAT_MODEL,
-    contents=prompt,
-)
+        prompt += (
+            f"{m['role']}: "
+            f"{m['content']}\n"
+        )
 
-answer = r.text or ""
+    prompt += f"user: {text}"
 
-if not answer.strip():
-    raise RuntimeError(
-        "Gemini mengembalikan jawaban kosong."
+    r = gemini.models.generate_content(
+        model=GEMINI_CHAT_MODEL,
+        contents=prompt,
     )
 
-return answer, GEMINI_CHAT_MODEL
+    answer = r.text or ""
 
-============================================================
+    if not answer.strip():
+        raise RuntimeError(
+            "Gemini mengembalikan jawaban kosong."
+        )
 
-GROQ
+    return answer, GEMINI_CHAT_MODEL
 
-============================================================
+
+# ============================================================
+# GROQ
+# ============================================================
 
 def call_groq(uid, text, task):
 
-if not groq:
-    raise RuntimeError(
-        "GROQ_API_KEY belum tersedia."
+    if not groq:
+        raise RuntimeError(
+            "GROQ_API_KEY belum tersedia."
+        )
+
+    if task == "coding":
+        model = GROQ_CODING_MODEL
+
+    elif task in ("reasoning", "math", "civil"):
+        model = GROQ_REASONING_MODEL
+
+    else:
+        model = GROQ_FAST_MODEL
+
+    r = groq.chat.completions.create(
+        model=model,
+        messages=build_messages(uid, text, task),
+        max_tokens=4096,
     )
 
-if task == "coding":
-    model = GROQ_CODING_MODEL
+    answer = r.choices[0].message.content or ""
 
-elif task in ("reasoning", "math", "civil"):
-    model = GROQ_REASONING_MODEL
+    if not answer.strip():
+        raise RuntimeError(
+            "Groq mengembalikan jawaban kosong."
+        )
 
-else:
-    model = GROQ_FAST_MODEL
+    return answer, model
 
-r = groq.chat.completions.create(
-    model=model,
-    messages=build_messages(uid, text, task),
-    max_tokens=4096,
-)
 
-answer = r.choices[0].message.content or ""
-
-if not answer.strip():
-    raise RuntimeError(
-        "Groq mengembalikan jawaban kosong."
-    )
-
-return answer, model
-
-============================================================
-
-SMART CHAT ROUTER
-
-============================================================
+# ============================================================
+# SMART CHAT ROUTER
+# ============================================================
 
 def chat_router(uid, text):
 
-task = classify_task(text)
+    task = classify_task(text)
 
-log.info(
-    "TASK=%s | text=%s",
-    task,
-    text[:120],
-)
+    log.info(
+        "TASK=%s | text=%s",
+        task,
+        text[:120],
+    )
 
-if task in ("technical", "civil"):
+    if task in ("technical", "civil"):
 
-    providers = [
-        (
-            "OpenRouter Free",
-            lambda: call_openrouter(uid, text, task),
-        ),
-        (
-            "Gemini",
-            lambda: call_gemini(uid, text, task),
-        ),
-        (
-            "Groq Free Tier",
-            lambda: call_groq(uid, text, task),
-        ),
-    ]
+        providers = [
+            (
+                "OpenRouter Free",
+                lambda: call_openrouter(
+                    uid,
+                    text,
+                    task,
+                ),
+            ),
+            (
+                "Gemini",
+                lambda: call_gemini(
+                    uid,
+                    text,
+                    task,
+                ),
+            ),
+            (
+                "Groq Free Tier",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                ),
+            ),
+        ]
 
-elif task in ("coding", "reasoning", "math"):
+    elif task in (
+        "coding",
+        "reasoning",
+        "math",
+    ):
 
-    providers = [
-        (
-            "OpenRouter Free",
-            lambda: call_openrouter(uid, text, task),
-        ),
-        (
-            "Groq Free Tier",
-            lambda: call_groq(uid, text, task),
-        ),
-        (
-            "Gemini",
-            lambda: call_gemini(uid, text, task),
-        ),
-    ]
+        providers = [
+            (
+                "OpenRouter Free",
+                lambda: call_openrouter(
+                    uid,
+                    text,
+                    task,
+                ),
+            ),
+            (
+                "Groq Free Tier",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                ),
+            ),
+            (
+                "Gemini",
+                lambda: call_gemini(
+                    uid,
+                    text,
+                    task,
+                ),
+            ),
+        ]
 
-else:
+    else:
 
-    providers = [
-        (
-            "OpenRouter Free",
-            lambda: call_openrouter(uid, text, task),
-        ),
-        (
-            "Gemini",
-            lambda: call_gemini(uid, text, task),
-        ),
-        (
-            "Groq Free Tier",
-            lambda: call_groq(uid, text, task),
-        ),
-    ]
+        providers = [
+            (
+                "OpenRouter Free",
+                lambda: call_openrouter(
+                    uid,
+                    text,
+                    task,
+                ),
+            ),
+            (
+                "Gemini",
+                lambda: call_gemini(
+                    uid,
+                    text,
+                    task,
+                ),
+            ),
+            (
+                "Groq Free Tier",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                ),
+            ),
+        ]
 
-errors = []
+    errors = []
 
-for provider_name, fn in providers:
+    for provider_name, fn in providers:
 
-    try:
+        try:
 
-        log.info(
-            "TRY PROVIDER | task=%s | provider=%s",
-            task,
-            provider_name,
-        )
-
-        answer, model = fn()
-
-        if not answer or not answer.strip():
-            raise RuntimeError(
-                "Provider mengembalikan jawaban kosong."
+            log.info(
+                "TRY PROVIDER | task=%s | provider=%s",
+                task,
+                provider_name,
             )
 
-        log.info(
-            "CHAT SUCCESS | task=%s | provider=%s | model=%s",
-            task,
-            provider_name,
-            model,
-        )
+            answer, model = fn()
 
-        return answer, provider_name, model, task
+            if not answer or not answer.strip():
+                raise RuntimeError(
+                    "Provider mengembalikan jawaban kosong."
+                )
 
-    except Exception as e:
+            log.info(
+                "CHAT SUCCESS | task=%s | provider=%s | model=%s",
+                task,
+                provider_name,
+                model,
+            )
 
-        error_text = str(e)
+            return (
+                answer,
+                provider_name,
+                model,
+                task,
+            )
 
-        errors.append(
-            f"{provider_name}: {error_text[:300]}"
-        )
+        except Exception as e:
 
-        log.warning(
-            "PROVIDER FAILED | provider=%s | error=%s",
-            provider_name,
-            error_text[:300],
-        )
+            error_text = str(e)
 
-        continue
+            errors.append(
+                f"{provider_name}: "
+                f"{error_text[:300]}"
+            )
 
-log.error(
-    "ALL FREE PROVIDERS FAILED | task=%s | errors=%s",
-    task,
-    " | ".join(errors),
-)
+            log.warning(
+                "PROVIDER FAILED | provider=%s | error=%s",
+                provider_name,
+                error_text[:300],
+            )
 
-raise RuntimeError(
-    "Semua provider AI GRATIS untuk "
-    f"kategori {task} sedang tidak tersedia. "
-    "Sistem sudah mencoba seluruh fallback gratis."
-)
+            continue
 
-============================================================
+    raise RuntimeError(
+        "Semua provider AI GRATIS untuk "
+        f"kategori {task} sedang tidak tersedia. "
+        "Sistem sudah mencoba seluruh fallback gratis."
+    )
 
-TELEGRAM API
 
-============================================================
+# ============================================================
+# TELEGRAM API
+# ============================================================
 
 async def tg(method, data):
 
-if not TELEGRAM_TOKEN:
-    raise RuntimeError(
-        "TELEGRAM_TOKEN belum diatur."
-    )
+    if not TELEGRAM_TOKEN:
+        raise RuntimeError(
+            "TELEGRAM_TOKEN belum diatur."
+        )
 
-async with httpx.AsyncClient(timeout=180) as client:
+    async with httpx.AsyncClient(
+        timeout=180
+    ) as client:
 
-    r = await client.post(
-        (
-            "https://api.telegram.org/"
-            f"bot{TELEGRAM_TOKEN}/"
-            f"{method}"
-        ),
-        json=data,
-    )
+        r = await client.post(
+            (
+                "https://api.telegram.org/"
+                f"bot{TELEGRAM_TOKEN}/"
+                f"{method}"
+            ),
+            json=data,
+        )
 
-    r.raise_for_status()
-    result = r.json()
+        r.raise_for_status()
 
-if not result.get("ok"):
-    raise RuntimeError(str(result))
+        result = r.json()
 
-return result
+    if not result.get("ok"):
+        raise RuntimeError(str(result))
 
-============================================================
+    return result
 
-TELEGRAM FILE
 
-============================================================
+# ============================================================
+# TELEGRAM FILE
+# ============================================================
 
 async def tg_file(file_id):
 
-result = await tg(
-    "getFile",
-    {"file_id": file_id},
-)
-
-path = result["result"]["file_path"]
-
-async with httpx.AsyncClient(timeout=180) as client:
-
-    r = await client.get(
-        (
-            "https://api.telegram.org/"
-            f"file/bot{TELEGRAM_TOKEN}/"
-            f"{path}"
-        )
+    result = await tg(
+        "getFile",
+        {"file_id": file_id},
     )
 
-    r.raise_for_status()
+    path = result["result"]["file_path"]
 
-return r.content, path
+    async with httpx.AsyncClient(
+        timeout=180
+    ) as client:
 
-============================================================
+        r = await client.get(
+            (
+                "https://api.telegram.org/"
+                f"file/bot{TELEGRAM_TOKEN}/"
+                f"{path}"
+            )
+        )
 
-TELEGRAM RESPONSE FORMATTER
+        r.raise_for_status()
 
-============================================================
+    return r.content, path
+
+
+# ============================================================
+# TELEGRAM RESPONSE FORMATTER
+# ============================================================
 
 def clean_telegram_text(text):
 
-if not text:
-    return "Tidak ada jawaban."
+    if not text:
+        return "Tidak ada jawaban."
 
-text = str(text).replace("\r\n", "\n")
-
-text = re.sub(
-    r"```[a-zA-Z0-9_+\-]*\n?",
-    "",
-    text,
-)
-
-text = text.replace("```", "")
-
-text = re.sub(
-    r"^\s*#{1,6}\s*",
-    "",
-    text,
-    flags=re.MULTILINE,
-)
-
-text = text.replace("**", "")
-
-text = re.sub(
-    r"(?<!\w)\*(?!\s)",
-    "",
-    text,
-)
-
-text = text.replace("__", "")
-text = text.replace("`", "")
-
-text = re.sub(
-    r"^\s*[-_*]{3,}\s*$",
-    "",
-    text,
-    flags=re.MULTILINE,
-)
-
-lines = text.split("\n")
-cleaned_lines = []
-
-for line in lines:
-
-    stripped = line.strip()
-
-    if "|" in stripped:
-
-        if re.fullmatch(
-            r"[\s|:_\-]+",
-            stripped,
-        ):
-            continue
-
-        cells = [
-            cell.strip()
-            for cell in stripped.strip("|").split("|")
-        ]
-
-        cells = [
-            cell
-            for cell in cells
-            if cell
-        ]
-
-        if cells:
-            line = " — ".join(cells)
-
-    line = re.sub(
-        r"^\s*[-*+]\s+",
-        "• ",
-        line,
+    text = str(text).replace(
+        "\r\n",
+        "\n",
     )
 
-    cleaned_lines.append(line)
-
-text = "\n".join(cleaned_lines)
-
-heading_emojis = {
-    "DATA": "📋",
-    "ASUMSI": "⚙️",
-    "PERHITUNGAN": "🧮",
-    "CUTTING LIST": "✂️",
-    "VALIDASI": "🔍",
-    "RINGKASAN": "📊",
-    "CATATAN": "📝",
-    "HASIL": "✅",
-    "KESIMPULAN": "🎯",
-    "KEBUTUHAN": "📐",
-    "KEBUTUHAN SIPIL": "📐",
-    "MATERIAL": "🔩",
-    "SAMBUNGAN": "🔧",
-    "WASTE": "♻️",
-    "TRUE WASTE": "🗑️",
-    "REUSABLE OFFCUT": "♻️",
-    "BETON": "🏗️",
-    "PEMBESIAN": "🔩",
-    "PONDASI": "🧱",
-    "GALIAN": "⛏️",
-    "URUGAN": "🪨",
-    "BEKISTING": "🪚",
-}
-
-result = []
-
-for line in text.split("\n"):
-
-    clean = line.strip()
-
-    if not clean:
-        result.append("")
-        continue
-
-    upper = clean.upper()
-
-    for heading, emoji in heading_emojis.items():
-
-        if upper == heading:
-
-            if not clean.startswith(emoji):
-                clean = f"{emoji} {heading}"
-
-            break
-
-    result.append(clean)
-
-text = "\n".join(result)
-
-text = re.sub(
-    r"\n{3,}",
-    "\n\n",
-    text,
-)
-
-text = re.sub(
-    r"[ \t]{2,}",
-    " ",
-    text,
-)
-
-return text.strip()
-
-============================================================
-
-SMART TELEGRAM CHUNK
-
-============================================================
-
-def split_telegram_message(
-text,
-max_length=3900,
-):
-
-if len(text) <= max_length:
-    return [text]
-
-chunks = []
-current = ""
-
-paragraphs = text.split("\n\n")
-
-for paragraph in paragraphs:
-
-    paragraph = paragraph.strip()
-
-    if not paragraph:
-        continue
-
-    candidate = (
-        current
-        + ("\n\n" if current else "")
-        + paragraph
+    text = re.sub(
+        r"```[a-zA-Z0-9_+\-]*\n?",
+        "",
+        text,
     )
 
-    if len(candidate) <= max_length:
+    text = text.replace(
+        "```",
+        "",
+    )
 
-        current = candidate
-        continue
+    text = re.sub(
+        r"^\s*#{1,6}\s*",
+        "",
+        text,
+        flags=re.MULTILINE,
+    )
 
-    if current:
-        chunks.append(
-            current.strip()
-        )
+    text = text.replace(
+        "**",
+        "",
+    )
 
-        current = ""
+    text = re.sub(
+        r"(?<!\w)\*(?!\s)",
+        "",
+        text,
+    )
 
-    lines = paragraph.split("\n")
+    text = text.replace(
+        "__",
+        "",
+    )
+
+    text = text.replace(
+        "`",
+        "",
+    )
+
+    text = re.sub(
+        r"^\s*[-_*]{3,}\s*$",
+        "",
+        text,
+        flags=re.MULTILINE,
+    )
+
+    lines = text.split("\n")
+    cleaned_lines = []
 
     for line in lines:
 
-        line = line.strip()
+        stripped = line.strip()
 
-        if not line:
+        if "|" in stripped:
+
+            if re.fullmatch(
+                r"[\s|:_\-]+",
+                stripped,
+            ):
+                continue
+
+            cells = [
+                cell.strip()
+                for cell in stripped.strip("|").split("|")
+            ]
+
+            cells = [
+                cell
+                for cell in cells
+                if cell
+            ]
+
+            if cells:
+                line = " — ".join(cells)
+
+        line = re.sub(
+            r"^\s*[-*+]\s+",
+            "• ",
+            line,
+        )
+
+        cleaned_lines.append(line)
+
+    text = "\n".join(cleaned_lines)
+
+    heading_emojis = {
+        "DATA": "📋",
+        "ASUMSI": "⚙️",
+        "PERHITUNGAN": "🧮",
+        "KEBUTUHAN SIPIL": "📐",
+        "CUTTING LIST": "✂️",
+        "VALIDASI": "🔍",
+        "RINGKASAN": "📊",
+        "CATATAN": "📝",
+        "HASIL": "✅",
+        "KESIMPULAN": "🎯",
+        "MATERIAL": "🔩",
+        "SAMBUNGAN": "🔧",
+        "WASTE": "♻️",
+        "TRUE WASTE": "🗑️",
+        "REUSABLE OFFCUT": "♻️",
+    }
+
+    result = []
+
+    for line in text.split("\n"):
+
+        clean = line.strip()
+
+        if not clean:
+
+            result.append("")
+            continue
+
+        upper = clean.upper()
+
+        for heading, emoji in heading_emojis.items():
+
+            if upper == heading:
+
+                if not clean.startswith(
+                    emoji
+                ):
+
+                    clean = (
+                        f"{emoji} {heading}"
+                    )
+
+                break
+
+        result.append(clean)
+
+    text = "\n".join(result)
+
+    text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text,
+    )
+
+    text = re.sub(
+        r"[ \t]{2,}",
+        " ",
+        text,
+    )
+
+    return text.strip()
+
+
+# ============================================================
+# SMART TELEGRAM CHUNK
+# ============================================================
+
+def split_telegram_message(
+    text,
+    max_length=3900,
+):
+
+    if len(text) <= max_length:
+        return [text]
+
+    chunks = []
+    current = ""
+
+    paragraphs = text.split(
+        "\n\n"
+    )
+
+    for paragraph in paragraphs:
+
+        paragraph = paragraph.strip()
+
+        if not paragraph:
             continue
 
         candidate = (
             current
-            + ("\n" if current else "")
-            + line
+            + (
+                "\n\n"
+                if current
+                else ""
+            )
+            + paragraph
         )
 
         if len(candidate) <= max_length:
 
             current = candidate
+            continue
 
-        else:
+        if current:
 
-            if current:
-                chunks.append(
-                    current.strip()
-                )
+            chunks.append(
+                current.strip()
+            )
 
             current = ""
 
-            while len(line) > max_length:
+        lines = paragraph.split("\n")
 
-                chunks.append(
-                    line[:max_length]
+        for line in lines:
+
+            line = line.strip()
+
+            if not line:
+                continue
+
+            candidate = (
+                current
+                + (
+                    "\n"
+                    if current
+                    else ""
                 )
-
-                line = line[max_length:]
-
-            current = line
-
-if current:
-    chunks.append(
-        current.strip()
-    )
-
-return chunks
-
-============================================================
-
-SEND TEXT
-
-============================================================
-
-async def send_text(chat_id, text):
-
-formatted = clean_telegram_text(text)
-
-chunks = split_telegram_message(
-    formatted,
-    max_length=3900,
-)
-
-for chunk in chunks:
-
-    await tg(
-        "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": chunk,
-        },
-    )
-
-    if len(chunks) > 1:
-        await asyncio.sleep(0.25)
-
-============================================================
-
-SEND PHOTO
-
-============================================================
-
-async def send_photo(chat_id, data):
-
-async with httpx.AsyncClient(timeout=180) as client:
-
-    r = await client.post(
-        (
-            "https://api.telegram.org/"
-            f"bot{TELEGRAM_TOKEN}/"
-            "sendPhoto"
-        ),
-        data={
-            "chat_id": str(chat_id)
-        },
-        files={
-            "photo": (
-                "image.png",
-                data,
-                "image/png",
+                + line
             )
-        },
+
+            if len(candidate) <= max_length:
+
+                current = candidate
+
+            else:
+
+                if current:
+
+                    chunks.append(
+                        current.strip()
+                    )
+
+                current = ""
+
+                while len(line) > max_length:
+
+                    chunks.append(
+                        line[:max_length]
+                    )
+
+                    line = line[max_length:]
+
+                current = line
+
+    if current:
+
+        chunks.append(
+            current.strip()
+        )
+
+    return chunks
+
+
+# ============================================================
+# SEND TEXT
+# ============================================================
+
+async def send_text(
+    chat_id,
+    text,
+):
+
+    formatted = clean_telegram_text(
+        text
     )
 
-    r.raise_for_status()
+    chunks = split_telegram_message(
+        formatted,
+        max_length=3900,
+    )
 
-============================================================
+    for chunk in chunks:
 
-SEND VIDEO
+        await tg(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": chunk,
+            },
+        )
 
-============================================================
+        if len(chunks) > 1:
 
-async def send_video(chat_id, data):
-
-async with httpx.AsyncClient(timeout=300) as client:
-
-    r = await client.post(
-        (
-            "https://api.telegram.org/"
-            f"bot{TELEGRAM_TOKEN}/"
-            "sendVideo"
-        ),
-        data={
-            "chat_id": str(chat_id)
-        },
-        files={
-            "video": (
-                "video.mp4",
-                data,
-                "video/mp4",
+            await asyncio.sleep(
+                0.25
             )
-        },
-    )
 
-    r.raise_for_status()
 
-============================================================
+# ============================================================
+# SEND PHOTO
+# ============================================================
 
-GEMINI VISION
+async def send_photo(
+    chat_id,
+    data,
+):
 
-============================================================
+    async with httpx.AsyncClient(
+        timeout=180
+    ) as client:
 
-def analyze_image(data, mime, prompt):
-
-if not gemini:
-    raise RuntimeError(
-        "Gemini belum dikonfigurasi."
-    )
-
-errors = []
-
-try:
-
-    r = gemini.models.generate_content(
-        model=GEMINI_CHAT_MODEL,
-        contents=[
-            types.Part.from_bytes(
-                data=data,
-                mime_type=mime,
+        r = await client.post(
+            (
+                "https://api.telegram.org/"
+                f"bot{TELEGRAM_TOKEN}/"
+                "sendPhoto"
             ),
-            SYSTEM + "\n\n" + prompt,
-        ],
-    )
+            data={
+                "chat_id": str(chat_id)
+            },
+            files={
+                "photo": (
+                    "image.png",
+                    data,
+                    "image/png",
+                )
+            },
+        )
 
-    if r.text:
-        return r.text, GEMINI_CHAT_MODEL
+        r.raise_for_status()
 
-except Exception as e:
 
-    errors.append(
-        "Gemini Vision: " + str(e)[:220]
-    )
+# ============================================================
+# SEND VIDEO
+# ============================================================
 
-if openrouter:
+async def send_video(
+    chat_id,
+    data,
+):
+
+    async with httpx.AsyncClient(
+        timeout=300
+    ) as client:
+
+        r = await client.post(
+            (
+                "https://api.telegram.org/"
+                f"bot{TELEGRAM_TOKEN}/"
+                "sendVideo"
+            ),
+            data={
+                "chat_id": str(chat_id)
+            },
+            files={
+                "video": (
+                    "video.mp4",
+                    data,
+                    "video/mp4",
+                )
+            },
+        )
+
+        r.raise_for_status()
+
+
+# ============================================================
+# GEMINI VISION
+# ============================================================
+
+def analyze_image(
+    data,
+    mime,
+    prompt,
+):
+
+    if not gemini:
+        raise RuntimeError(
+            "Gemini belum dikonfigurasi."
+        )
+
+    errors = []
 
     try:
 
-        b64 = base64.b64encode(data).decode()
-
-        content = [
-            {
-                "type": "text",
-                "text": SYSTEM + "\n\n" + prompt,
-            },
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url":
-                        f"data:{mime};base64,{b64}"
-                },
-            },
-        ]
-
-        r = (
-            openrouter
-            .chat
-            .completions
-            .create(
-                model=OPENROUTER_FREE_MODEL,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": content,
-                    }
-                ],
-                max_tokens=4096,
-            )
+        r = gemini.models.generate_content(
+            model=GEMINI_CHAT_MODEL,
+            contents=[
+                types.Part.from_bytes(
+                    data=data,
+                    mime_type=mime,
+                ),
+                SYSTEM
+                + "\n\n"
+                + prompt,
+            ],
         )
 
-        answer = (
-            r.choices[0]
-            .message
-            .content
-            or ""
-        )
-
-        if answer.strip():
+        if r.text:
 
             return (
-                answer,
-                getattr(
-                    r,
-                    "model",
-                    OPENROUTER_FREE_MODEL,
-                ),
+                r.text,
+                GEMINI_CHAT_MODEL,
             )
 
     except Exception as e:
 
         errors.append(
-            "OpenRouter Free Vision: "
+            "Gemini Vision: "
             + str(e)[:220]
         )
 
-raise RuntimeError(
-    "Semua provider vision gratis gagal: "
-    + " | ".join(errors)
-)
+    if openrouter:
 
-============================================================
+        try:
 
-GEMINI VIDEO
+            b64 = base64.b64encode(
+                data
+            ).decode()
 
-============================================================
+            content = [
+                {
+                    "type": "text",
+                    "text":
+                        SYSTEM
+                        + "\n\n"
+                        + prompt,
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url":
+                            f"data:{mime};base64,{b64}"
+                    },
+                },
+            ]
 
-def analyze_video(data, mime, prompt):
+            r = (
+                openrouter
+                .chat
+                .completions
+                .create(
+                    model=OPENROUTER_FREE_MODEL,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": content,
+                        }
+                    ],
+                    max_tokens=4096,
+                )
+            )
 
-if not gemini:
+            answer = (
+                r.choices[0]
+                .message
+                .content
+                or ""
+            )
+
+            if answer.strip():
+
+                return (
+                    answer,
+                    getattr(
+                        r,
+                        "model",
+                        OPENROUTER_FREE_MODEL,
+                    ),
+                )
+
+        except Exception as e:
+
+            errors.append(
+                "OpenRouter Free Vision: "
+                + str(e)[:220]
+            )
+
     raise RuntimeError(
-        "Gemini diperlukan untuk analisis video."
+        "Semua provider vision gratis gagal: "
+        + " | ".join(errors)
     )
 
-uploaded = gemini.files.upload(
-    file=types.Part.from_bytes(
-        data=data,
-        mime_type=mime,
-    )
-)
 
-for _ in range(60):
+# ============================================================
+# GEMINI VIDEO
+# ============================================================
 
-    f = gemini.files.get(
-        name=uploaded.name
-    )
+def analyze_video(
+    data,
+    mime,
+    prompt,
+):
 
-    state = getattr(
-        getattr(f, "state", None),
-        "name",
-        "",
-    )
-
-    if state == "ACTIVE":
-
-        uploaded = f
-        break
-
-    if state == "FAILED":
+    if not gemini:
 
         raise RuntimeError(
-            "Gemini gagal memproses video."
+            "Gemini diperlukan untuk analisis video."
         )
 
-    time.sleep(2)
-
-else:
-
-    raise RuntimeError(
-        "Video belum siap diproses."
+    uploaded = gemini.files.upload(
+        file=types.Part.from_bytes(
+            data=data,
+            mime_type=mime,
+        )
     )
 
-result = gemini.models.generate_content(
-    model=GEMINI_CHAT_MODEL,
-    contents=[
-        uploaded,
-        SYSTEM + "\n\n" + prompt,
-    ],
-)
+    for _ in range(60):
 
-return result.text or ""
+        f = gemini.files.get(
+            name=uploaded.name
+        )
 
-============================================================
+        state = getattr(
+            getattr(
+                f,
+                "state",
+                None,
+            ),
+            "name",
+            "",
+        )
 
-IMAGE GENERATION
+        if state == "ACTIVE":
 
-============================================================
+            uploaded = f
+            break
 
-def pollinations_image(prompt):
+        if state == "FAILED":
 
-if not POLLINATIONS_ENABLED:
-    raise RuntimeError(
-        "Pollinations tidak diaktifkan."
-    )
+            raise RuntimeError(
+                "Gemini gagal memproses video."
+            )
 
-if not POLLINATIONS_KEY:
-    raise RuntimeError(
-        "POLLINATIONS_API_KEY belum tersedia."
-    )
+        time.sleep(2)
 
-from urllib.parse import quote
-
-url = (
-    f"{POLLINATIONS_BASE_URL}/image/"
-    f"{quote(prompt, safe='')}"
-    f"?model={quote(POLLINATIONS_IMAGE_MODEL)}"
-    f"&width=1024"
-    f"&height=1024"
-)
-
-with httpx.Client(timeout=300) as client:
-
-    r = client.get(
-        url,
-        headers={
-            "Authorization":
-                f"Bearer {POLLINATIONS_KEY}",
-            "Accept":
-                "image/png,image/jpeg,*/*",
-        },
-    )
-
-    if r.status_code >= 400:
+    else:
 
         raise RuntimeError(
-            f"Pollinations HTTP {r.status_code}: "
-            f"{r.text[:400]}"
+            "Video belum siap diproses."
         )
 
-    if not r.content:
-
-        raise RuntimeError(
-            "Pollinations mengembalikan data kosong."
+    result = (
+        gemini
+        .models
+        .generate_content(
+            model=GEMINI_CHAT_MODEL,
+            contents=[
+                uploaded,
+                SYSTEM
+                + "\n\n"
+                + prompt,
+            ],
         )
-
-    return r.content
-
-def generate_image(prompt):
-
-if POLLINATIONS_ENABLED:
-
-    return (
-        pollinations_image(prompt),
-        "Pollinations",
     )
 
-raise RuntimeError(
-    "Generate gambar GRATIS belum tersedia. "
-    "Aktifkan POLLINATIONS_ENABLED=true "
-    "dan POLLINATIONS_API_KEY."
-)
+    return result.text or ""
 
-============================================================
 
-COMMAND ARGUMENT
+# ============================================================
+# IMAGE GENERATION
+# ============================================================
 
-============================================================
+def pollinations_image(
+    prompt
+):
+
+    if not POLLINATIONS_ENABLED:
+
+        raise RuntimeError(
+            "Pollinations tidak diaktifkan."
+        )
+
+    if not POLLINATIONS_KEY:
+
+        raise RuntimeError(
+            "POLLINATIONS_API_KEY belum tersedia."
+        )
+
+    from urllib.parse import quote
+
+    url = (
+        f"{POLLINATIONS_BASE_URL}/image/"
+        f"{quote(prompt, safe='')}"
+        f"?model="
+        f"{quote(POLLINATIONS_IMAGE_MODEL)}"
+        f"&width=1024"
+        f"&height=1024"
+    )
+
+    with httpx.Client(
+        timeout=300
+    ) as client:
+
+        r = client.get(
+            url,
+            headers={
+                "Authorization":
+                    f"Bearer {POLLINATIONS_KEY}",
+                "Accept":
+                    "image/png,image/jpeg,*/*",
+            },
+        )
+
+        if r.status_code >= 400:
+
+            raise RuntimeError(
+                f"Pollinations HTTP "
+                f"{r.status_code}: "
+                f"{r.text[:400]}"
+            )
+
+        if not r.content:
+
+            raise RuntimeError(
+                "Pollinations mengembalikan data kosong."
+            )
+
+        return r.content
+
+
+def generate_image(
+    prompt
+):
+
+    if POLLINATIONS_ENABLED:
+
+        return (
+            pollinations_image(
+                prompt
+            ),
+            "Pollinations",
+        )
+
+    raise RuntimeError(
+        "Generate gambar GRATIS belum tersedia. "
+        "Aktifkan POLLINATIONS_ENABLED=true "
+        "dan POLLINATIONS_API_KEY."
+    )
+
+
+# ============================================================
+# COMMAND ARGUMENT
+# ============================================================
 
 def command_arg(text):
 
-parts = text.split(
-    maxsplit=1
-)
+    parts = text.split(
+        maxsplit=1
+    )
 
-return (
-    parts[1].strip()
-    if len(parts) > 1
-    else ""
-)
+    return (
+        parts[1].strip()
+        if len(parts) > 1
+        else ""
+    )
 
-============================================================
 
-HANDLE TELEGRAM UPDATE
+# ============================================================
+# SIPIL HELP
+# ============================================================
 
-============================================================
+def civil_help():
+
+    return """
+📐 KALKULATOR KEBUTUHAN SIPIL
+
+Bot dapat membantu menghitung:
+
+• Luas bangunan
+• Luas dinding
+• Volume beton
+• Pondasi
+• Sloof
+• Kolom
+• Balok
+• Tulangan
+• Begel
+• Bata
+• Batako
+• Hebel
+• Plester
+• Acian
+• Keramik
+• Semen
+• Pasir
+• Split/kerikil
+• Estimasi material
+
+Contoh 1:
+
+Hitung volume cor lantai
+panjang 10 m
+lebar 5 m
+tebal 10 cm
+
+Contoh 2:
+
+Hitung volume sloof
+panjang 30 m
+ukuran 15 x 20 cm
+
+Contoh 3:
+
+Sloof panjang 30 m,
+tulangan utama 4D10,
+begel D8 jarak 15 cm.
+Hitung kebutuhan besinya.
+
+Contoh 4:
+
+Dinding panjang 10 m
+tinggi 3 m.
+Hitung kebutuhan bata.
+
+Contoh 5:
+
+Lantai 5 x 10 m,
+keramik 60 x 60 cm.
+Hitung jumlah keramik.
+
+⚠️ Untuk kebutuhan semen,
+pasir, split, mortar, dan material
+berdasarkan campuran tertentu,
+bot akan meminta atau menjelaskan
+asumsi/koefisien yang digunakan.
+
+⚠️ Untuk struktur bangunan,
+hasil AI adalah estimasi awal,
+bukan pengganti perhitungan
+engineer/insinyur struktur.
+"""
+
+
+# ============================================================
+# HANDLE TELEGRAM UPDATE
+# ============================================================
 
 async def handle(update):
 
-message = update.get("message")
+    message = update.get(
+        "message"
+    )
 
-if not message:
-    return
+    if not message:
+        return
 
-chat_id = (
-    message
-    .get("chat", {})
-    .get("id")
-)
+    chat_id = (
+        message
+        .get("chat", {})
+        .get("id")
+    )
 
-uid = str(
-    message
-    .get("from", {})
-    .get("id", chat_id)
-)
+    uid = str(
+        message
+        .get("from", {})
+        .get("id", chat_id)
+    )
 
-text = (
-    message.get("text", "")
-    or ""
-)
+    text = (
+        message.get(
+            "text",
+            ""
+        )
+        or ""
+    )
 
-caption = (
-    message.get("caption", "")
-    or ""
-)
+    caption = (
+        message.get(
+            "caption",
+            ""
+        )
+        or ""
+    )
 
-# ========================================================
-# START
-# ========================================================
+    # ========================================================
+    # START
+    # ========================================================
 
-if text.startswith("/start"):
+    if text.startswith(
+        "/start"
+    ):
 
-    await send_text(
-        chat_id,
-        """🤖 Designmanufaktur Super AI Agent aktif.
+        await send_text(
+            chat_id,
+            """🤖 Designmanufaktur Super AI Agent aktif.
 
 🧠 Smart Multi-AI Router
 💰 FREE-FIRST
@@ -2099,22 +2054,23 @@ if text.startswith("/start"):
 🎥 Gemini Video Analysis
 🎨 Free Image Generation
 
-🔧 Technical/Manufacturing:
-OpenRouter Free → Gemini → Groq
+📐 CIVIL CALCULATOR
+✅ Beton
+✅ Pondasi
+✅ Sloof
+✅ Kolom
+✅ Balok
+✅ Tulangan
+✅ Begel
+✅ Bata
+✅ Batako
+✅ Hebel
+✅ Plester
+✅ Acian
+✅ Keramik
+✅ Estimasi material
 
-📐 Civil:
-OpenRouter Free → Gemini → Groq
-
-💻 Coding:
-OpenRouter Free → Groq → Gemini
-
-🧠 Reasoning/Math:
-OpenRouter Free → Groq → Gemini
-
-🎨 General/Creative:
-OpenRouter Free → Gemini → Groq
-
-✂️ Cutting List:
+✂️ CUTTING LIST
 ✅ Validasi jumlah potongan
 ✅ Validasi kapasitas batang
 ✅ Validasi total material
@@ -2123,62 +2079,82 @@ OpenRouter Free → Gemini → Groq
 ✅ Reusable Offcut
 ✅ Anti double-counting
 
-📐 Kebutuhan Sipil:
-✅ Volume beton
-✅ Semen
-✅ Pasir
-✅ Split
-✅ Pondasi
-✅ Sloof
-✅ Kolom
-✅ Balok
-✅ Plat/lantai
-✅ Bata/batako
-✅ Plester
-✅ Acian
-✅ Bekisting
-✅ Galian
-✅ Urugan
-✅ Pembesian
-✅ Berat besi
-✅ Quantity Takeoff
+Technical/Manufacturing:
+OpenRouter Free → Gemini → Groq
 
-✨ Format jawaban Telegram sudah dioptimalkan.
+Civil:
+OpenRouter Free → Gemini → Groq
+
+Coding:
+OpenRouter Free → Groq → Gemini
+
+Reasoning/Math:
+OpenRouter Free → Groq → Gemini
+
+General/Creative:
+OpenRouter Free → Gemini → Groq
 
 Jika provider gagal → otomatis fallback.
 
-/model → status AI
-/reset → hapus memory sesi
-/gambar <prompt> → generate gambar
-/video → analisis video""",
-)
+Perintah:
 
-    return
+/model
+/reset
+/sipil
+/gambar <prompt>
+/video
 
-# ========================================================
-# RESET
-# ========================================================
+Ketik /sipil untuk contoh perhitungan sipil.""",
+        )
 
-if text.startswith("/reset"):
+        return
 
-    memory.pop(uid, None)
+    # ========================================================
+    # RESET
+    # ========================================================
 
-    await send_text(
-        chat_id,
-        "✅ Memory sesi dihapus.",
-    )
+    if text.startswith(
+        "/reset"
+    ):
 
-    return
+        memory.pop(
+            uid,
+            None
+        )
 
-# ========================================================
-# MODEL
-# ========================================================
+        await send_text(
+            chat_id,
+            "✅ Memory sesi dihapus.",
+        )
 
-if text.startswith("/model"):
+        return
 
-    await send_text(
-        chat_id,
-        f"""🤖 STATUS SUPER AI AGENT
+    # ========================================================
+    # SIPIL
+    # ========================================================
+
+    if text.startswith(
+        "/sipil"
+    ):
+
+        await send_text(
+            chat_id,
+            civil_help(),
+        )
+
+        return
+
+    # ========================================================
+    # MODEL
+    # ========================================================
+
+    if text.startswith(
+        "/model"
+    ):
+
+        await send_text(
+            chat_id,
+            f"""🤖 STATUS SUPER AI AGENT
 
 Gemini:
 {'✅ AKTIF' if gemini else '❌ TIDAK AKTIF'}
@@ -2235,13 +2211,13 @@ Vision
 📐 CIVIL
 ✅ Volume
 ✅ Material
-✅ Beton
-✅ Pondasi
-✅ Pembesian
-✅ Galian
-✅ Urugan
-✅ Bekisting
-✅ Quantity Takeoff
+✅ Tulangan
+✅ Begel
+✅ Bata
+✅ Plester
+✅ Acian
+✅ Keramik
+✅ Validasi asumsi
 
 ✂️ CUTTING LIST
 ✅ Quantity validation
@@ -2254,153 +2230,182 @@ Vision
 
 💰 PAID MODEL ROUTING
 DISABLED""",
-)
+        )
 
-    return
+        return
 
-# ========================================================
-# GAMBAR
-# ========================================================
+    # ========================================================
+    # GAMBAR
+    # ========================================================
 
-if text.startswith("/gambar"):
+    if text.startswith(
+        "/gambar"
+    ):
 
-    prompt = command_arg(text)
+        prompt = command_arg(
+            text
+        )
 
-    if not prompt:
+        if not prompt:
 
-        await send_text(
-            chat_id,
-            """🎨 GENERATE GAMBAR
+            await send_text(
+                chat_id,
+                """🎨 GENERATE GAMBAR
 
 Contoh:
 
 /gambar pagar minimalis hitam modern""",
-)
-
-        return
-
-    await send_text(
-        chat_id,
-        "🎨 Memilih generator gambar GRATIS...",
-    )
-
-    try:
-
-        data, provider = await asyncio.to_thread(
-            generate_image,
-            prompt,
-        )
-
-        await send_photo(
-            chat_id,
-            data,
-        )
-
-        await send_text(
-            chat_id,
-            f"✅ Gambar dibuat oleh {provider}.",
-        )
-
-    except Exception as e:
-
-        log.exception(
-            "image generation failed"
-        )
-
-        await send_text(
-            chat_id,
-            "❌ Generate gambar gratis gagal.\n"
-            + str(e)[:700],
-        )
-
-    return
-
-# ========================================================
-# VIDEO
-# ========================================================
-
-if message.get("video"):
-
-    await send_text(
-        chat_id,
-        "🎥 Sedang menganalisis video...",
-    )
-
-    try:
-
-        data, path = await tg_file(
-            message["video"]["file_id"]
-        )
-
-        if len(data) > 20 * 1024 * 1024:
-
-            await send_text(
-                chat_id,
-                "❌ Video lebih dari 20 MB.",
             )
 
             return
 
-        mime = (
-            "video/quicktime"
-            if path.lower().endswith(".mov")
-            else "video/mp4"
+        await send_text(
+            chat_id,
+            "🎨 Memilih generator gambar GRATIS...",
         )
 
-        answer = await asyncio.to_thread(
-            analyze_video,
-            data,
-            mime,
-            caption or (
-                "Analisa video ini secara detail. "
-                "Jelaskan objek, proses, kondisi, "
-                "masalah yang terlihat, dan saran praktis."
-            ),
-        )
+        try:
+
+            data, provider = (
+                await asyncio.to_thread(
+                    generate_image,
+                    prompt,
+                )
+            )
+
+            await send_photo(
+                chat_id,
+                data,
+            )
+
+            await send_text(
+                chat_id,
+                f"✅ Gambar dibuat oleh {provider}.",
+            )
+
+        except Exception as e:
+
+            log.exception(
+                "image generation failed"
+            )
+
+            await send_text(
+                chat_id,
+                "❌ Generate gambar gratis gagal.\n"
+                + str(e)[:700],
+            )
+
+        return
+
+    # ========================================================
+    # VIDEO
+    # ========================================================
+
+    if message.get(
+        "video"
+    ):
 
         await send_text(
             chat_id,
-            answer,
+            "🎥 Sedang menganalisis video...",
         )
 
-    except Exception as e:
+        try:
 
-        log.exception(
-            "video analysis failed"
-        )
+            data, path = (
+                await tg_file(
+                    message[
+                        "video"
+                    ][
+                        "file_id"
+                    ]
+                )
+            )
+
+            if len(data) > (
+                20 * 1024 * 1024
+            ):
+
+                await send_text(
+                    chat_id,
+                    "❌ Video lebih dari 20 MB.",
+                )
+
+                return
+
+            mime = (
+                "video/quicktime"
+                if path.lower().endswith(
+                    ".mov"
+                )
+                else "video/mp4"
+            )
+
+            answer = (
+                await asyncio.to_thread(
+                    analyze_video,
+                    data,
+                    mime,
+                    caption or (
+                        "Analisa video ini secara detail. "
+                        "Jelaskan objek, proses, kondisi, "
+                        "masalah yang terlihat, dan saran praktis."
+                    ),
+                )
+            )
+
+            await send_text(
+                chat_id,
+                answer,
+            )
+
+        except Exception as e:
+
+            log.exception(
+                "video analysis failed"
+            )
+
+            await send_text(
+                chat_id,
+                "❌ Analisis video gagal.\n"
+                + str(e)[:700],
+            )
+
+        return
+
+    # ========================================================
+    # PHOTO
+    # ========================================================
+
+    if message.get(
+        "photo"
+    ):
 
         await send_text(
             chat_id,
-            "❌ Analisis video gagal.\n"
-            + str(e)[:700],
+            "🖼️ Gemini Vision sedang menganalisis gambar...",
         )
 
-    return
+        try:
 
-# ========================================================
-# PHOTO
-# ========================================================
+            data, path = (
+                await tg_file(
+                    message[
+                        "photo"
+                    ][-1][
+                        "file_id"
+                    ]
+                )
+            )
 
-if message.get("photo"):
+            mime = (
+                mimetypes.guess_type(
+                    path
+                )[0]
+                or "image/jpeg"
+            )
 
-    await send_text(
-        chat_id,
-        "🖼️ Gemini Vision sedang menganalisis gambar...",
-    )
-
-    try:
-
-        data, path = await tg_file(
-            message["photo"][-1]["file_id"]
-        )
-
-        mime = (
-            mimetypes.guess_type(path)[0]
-            or "image/jpeg"
-        )
-
-        prompt = caption or """
-
+            prompt = caption or """
 Analisa gambar ini secara detail.
 
 Jika terkait manufaktur, bengkel las,
@@ -2420,11 +2425,77 @@ Jangan mengarang ukuran atau data
 yang tidak terlihat pada gambar.
 """
 
-        answer, model = await asyncio.to_thread(
-            analyze_image,
-            data,
-            mime,
-            prompt,
+            answer, model = (
+                await asyncio.to_thread(
+                    analyze_image,
+                    data,
+                    mime,
+                    prompt,
+                )
+            )
+
+            await send_text(
+                chat_id,
+                answer,
+            )
+
+            log.info(
+                "VISION SUCCESS | model=%s",
+                model,
+            )
+
+        except Exception as e:
+
+            log.exception(
+                "image analysis failed"
+            )
+
+            await send_text(
+                chat_id,
+                "❌ Analisis gambar gagal.\n"
+                + str(e)[:700],
+            )
+
+        return
+
+    # ========================================================
+    # NORMAL CHAT
+    # ========================================================
+
+    if not text:
+        return
+
+    try:
+
+        await tg(
+            "sendChatAction",
+            {
+                "chat_id": chat_id,
+                "action": "typing",
+            },
+        )
+
+        (
+            answer,
+            provider,
+            model,
+            task,
+        ) = await asyncio.to_thread(
+            chat_router,
+            uid,
+            text,
+        )
+
+        remember(
+            uid,
+            "user",
+            text,
+        )
+
+        remember(
+            uid,
+            "assistant",
+            answer,
         )
 
         await send_text(
@@ -2433,198 +2504,147 @@ yang tidak terlihat pada gambar.
         )
 
         log.info(
-            "VISION SUCCESS | model=%s",
+            "CHAT DONE | task=%s | provider=%s | model=%s",
+            task,
+            provider,
             model,
         )
 
     except Exception as e:
 
         log.exception(
-            "image analysis failed"
+            "chat failed"
         )
 
         await send_text(
             chat_id,
-            "❌ Analisis gambar gagal.\n"
+            "❌ Semua AI GRATIS gagal untuk request ini.\n\n"
             + str(e)[:700],
         )
 
-    return
 
-# ========================================================
-# NORMAL CHAT
-# ========================================================
-
-if not text:
-    return
-
-try:
-
-    await tg(
-        "sendChatAction",
-        {
-            "chat_id": chat_id,
-            "action": "typing",
-        },
-    )
-
-    (
-        answer,
-        provider,
-        model,
-        task,
-    ) = await asyncio.to_thread(
-        chat_router,
-        uid,
-        text,
-    )
-
-    remember(
-        uid,
-        "user",
-        text,
-    )
-
-    remember(
-        uid,
-        "assistant",
-        answer,
-    )
-
-    await send_text(
-        chat_id,
-        answer,
-    )
-
-    log.info(
-        "CHAT DONE | task=%s | provider=%s | model=%s",
-        task,
-        provider,
-        model,
-    )
-
-except Exception as e:
-
-    log.exception(
-        "chat failed"
-    )
-
-    await send_text(
-        chat_id,
-        "❌ Semua AI GRATIS gagal untuk request ini.\n\n"
-        + str(e)[:700],
-    )
-
-============================================================
-
-ROOT
-
-============================================================
+# ============================================================
+# ROOT
+# ============================================================
 
 @app.get("/")
 async def root():
 
-return {
-    "ok": True,
-    "service":
-        "Designmanufaktur Super AI Agent",
-    "free_only": True,
-    "telegram_format":
-        "clean_and_mobile_friendly",
-    "providers": {
-        "gemini": bool(gemini),
-        "openrouter_free": bool(openrouter),
-        "groq_free_tier": bool(groq),
-    },
-    "features": {
-        "technical": True,
-        "civil": True,
-        "cutting_list": True,
-        "quantity_takeoff": True,
-        "vision": True,
-        "video": True,
-        "image_generation": POLLINATIONS_ENABLED,
-    },
-    "models": {
-        "gemini": GEMINI_CHAT_MODEL,
-        "openrouter": OPENROUTER_FREE_MODEL,
-        "groq_coding": GROQ_CODING_MODEL,
-        "groq_reasoning": GROQ_REASONING_MODEL,
-        "groq_fast": GROQ_FAST_MODEL,
-    },
-}
+    return {
+        "ok": True,
+        "service":
+            "Designmanufaktur Super AI Agent",
+        "free_only": True,
+        "telegram_format":
+            "clean_and_mobile_friendly",
+        "capabilities": {
+            "civil_calculation": True,
+            "cutting_list": True,
+            "vision": bool(gemini),
+            "video": bool(gemini),
+            "image_generation":
+                POLLINATIONS_ENABLED,
+        },
+        "providers": {
+            "gemini": bool(gemini),
+            "openrouter_free":
+                bool(openrouter),
+            "groq_free_tier":
+                bool(groq),
+        },
+        "models": {
+            "gemini":
+                GEMINI_CHAT_MODEL,
+            "openrouter":
+                OPENROUTER_FREE_MODEL,
+            "groq_coding":
+                GROQ_CODING_MODEL,
+            "groq_reasoning":
+                GROQ_REASONING_MODEL,
+            "groq_fast":
+                GROQ_FAST_MODEL,
+        },
+    }
 
-============================================================
 
-API
-
-============================================================
+# ============================================================
+# API
+# ============================================================
 
 @app.get("/api")
 async def api_root():
 
-return await root()
+    return await root()
 
-============================================================
 
-WEBHOOK IMPLEMENTATION
-
-============================================================
+# ============================================================
+# WEBHOOK IMPLEMENTATION
+# ============================================================
 
 async def webhook_impl(
-request: Request,
-x_telegram_bot_api_secret_token: Optional[str],
+    request: Request,
+    x_telegram_bot_api_secret_token:
+        Optional[str],
 ):
 
-if (
-    WEBHOOK_SECRET
-    and
-    x_telegram_bot_api_secret_token != WEBHOOK_SECRET
-):
+    if (
+        WEBHOOK_SECRET
+        and
+        x_telegram_bot_api_secret_token
+        != WEBHOOK_SECRET
+    ):
 
-    raise HTTPException(
-        status_code=403,
-        detail="Invalid webhook secret",
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid webhook secret",
+        )
+
+    update = await request.json()
+
+    await handle(
+        update
     )
 
-update = await request.json()
+    return {
+        "ok": True
+    }
 
-await handle(update)
 
-return {"ok": True}
+# ============================================================
+# TELEGRAM WEBHOOK
+# ============================================================
 
-============================================================
-
-TELEGRAM WEBHOOK
-
-============================================================
-
-@app.post("/api/webhook")
+@app.post(
+    "/api/webhook"
+)
 async def webhook(
-request: Request,
-x_telegram_bot_api_secret_token:
-Optional[str] = Header(default=None),
+    request: Request,
+    x_telegram_bot_api_secret_token:
+        Optional[str] = Header(
+            default=None
+        ),
 ):
 
-return await webhook_impl(
-    request,
-    x_telegram_bot_api_secret_token,
-)
+    return await webhook_impl(
+        request,
+        x_telegram_bot_api_secret_token,
+    )
 
-============================================================
 
-LEGACY ROOT WEBHOOK
-
-============================================================
+# ============================================================
+# LEGACY ROOT WEBHOOK
+# ============================================================
 
 @app.post("/")
 async def root_post(
-request: Request,
-x_telegram_bot_api_secret_token:
-Optional[str] = Header(default=None),
+    request: Request,
+    x_telegram_bot_api_secret_token:
+        Optional[str] = Header(
+            default=None
+        ),
 ):
 
-return await webhook_impl(
-    request,
-    x_telegram_bot_api_secret_token,
-)
+    return await webhook_impl(
+        request,
+        x_telegram_bot_api_secret_token,
+    )
