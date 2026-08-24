@@ -1,5 +1,3 @@
-index.py — Designmanufaktur Super AI Agent + Civil Calculator
-
 import asyncio
 import base64
 import mimetypes
