@@ -1,36 +1,11 @@
-"""
-Designmanufaktur Super AI Agent Telegram
-Vercel / FastAPI / Python
-
-Main features:
-- Telegram webhook
-- Expert routing: Coding / Reasoning / Manufacturing / Chat
-- Gemini + Groq fallback
-- GitHub persistent memory
-- GitHub knowledge base + retrieval
-- GitHub few-shot examples
-- TXT/MD/CSV/JSON/PY/JS/TS/HTML/CSS/XML/YAML/YML/PDF/DOCX ingestion
-- Photo analysis and video analysis with Gemini
-- Optional Pollinations image/video generation
-- Commands: /start /model /memory /knowledge /remember /forget /reset /gambar /video
-
-Secrets are read only from environment variables.
-"""
-
-from __future__ import annotations
-
 import asyncio
 import base64
-import io
-import json
-import logging
 import mimetypes
 import os
 import re
 import time
-import uuid
-from pathlib import PurePosixPath
-from typing import Any, Optional
+import logging
+from typing import Optional
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -38,1513 +13,2140 @@ from google import genai
 from google.genai import types
 from openai import OpenAI
 
-try:
-    from pypdf import PdfReader
-except Exception:
-    PdfReader = None
 
-try:
-    from docx import Document
-except Exception:
-    Document = None
+# ============================================================
+# APP
+# ============================================================
 
-
-# ---------------------------------------------------------------------------
-# CONFIG
-# ---------------------------------------------------------------------------
-
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
+logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("designmanufaktur")
 
-app = FastAPI(title="Designmanufaktur Super AI Agent")
+app = FastAPI(
+    title="Designmanufaktur Super AI Agent"
+)
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
 
-GEMINI_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+# ============================================================
+# ENVIRONMENT
+# ============================================================
 
-# Accept common human-written values such as "Gemini_2_5_Flash".
-def normalize_gemini_model(value: str) -> str:
-    value = (value or "").strip().lower()
-    aliases = {
-        "gemini_2_5_flash": "gemini-2.5-flash",
-        "gemini 2.5 flash": "gemini-2.5-flash",
-        "gemini_2_5_flash_lite": "gemini-2.5-flash-lite",
-        "gemini 2.5 flash lite": "gemini-2.5-flash-lite",
-    }
-    return aliases.get(value, value)
+TELEGRAM_TOKEN = os.getenv(
+    "TELEGRAM_TOKEN",
+    ""
+)
 
-GEMINI_MODEL = normalize_gemini_model(GEMINI_MODEL)
-GEMINI_FALLBACK_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
-]
-GEMINI_ACTIVE_MODEL = GEMINI_MODEL
+WEBHOOK_SECRET = os.getenv(
+    "TELEGRAM_WEBHOOK_SECRET",
+    ""
+)
 
-GROQ_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_REASONING_MODEL = os.getenv(
-    "GROQ_REASONING_MODEL", "openai/gpt-oss-120b"
-).strip()
-GROQ_CODING_MODEL = os.getenv(
-    "GROQ_CODING_MODEL", "qwen/qwen3-32b"
-).strip()
-GROQ_FAST_MODEL = os.getenv(
-    "GROQ_FAST_MODEL", "openai/gpt-oss-20b"
-).strip()
 
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
-GITHUB_REPO = os.getenv(
-    "GITHUB_REPO", "Dinal7297/designmanufaktur-memory"
-).strip()
-GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main").strip()
+# ============================================================
+# GEMINI
+# ============================================================
 
-POLLINATIONS_KEY = os.getenv("POLLINATIONS_API_KEY", "").strip()
-POLLINATIONS_ENABLED = os.getenv(
-    "POLLINATIONS_ENABLED", "false"
-).strip().lower() in {"1", "true", "yes", "on"}
-POLLINATIONS_IMAGE_MODEL = os.getenv(
-    "POLLINATIONS_IMAGE_MODEL", "flux"
-).strip()
-POLLINATIONS_VIDEO_MODEL = os.getenv(
-    "POLLINATIONS_VIDEO_MODEL", "wan"
-).strip()
+GEMINI_KEY = os.getenv(
+    "GEMINI_API_KEY",
+    ""
+)
 
-# Optional image-generation model. If absent, /gambar uses the stable
-# Gemini image model as a fallback when GEMINI_API_KEY exists.
+GEMINI_CHAT_MODEL = os.getenv(
+    "GEMINI_MODEL",
+    "gemini-3.6-flash"
+)
+
 GEMINI_IMAGE_MODEL = os.getenv(
-    "GEMINI_IMAGE_MODEL", "gemini-2.5-flash-image"
-).strip()
+    "GEMINI_IMAGE_MODEL",
+    "gemini-2.5-flash-image"
+)
 
-# Telegram bot download limit is 20 MB for getFile.
-MAX_TELEGRAM_DOWNLOAD = 20 * 1024 * 1024
-MAX_HISTORY = 24
-MAX_KNOWLEDGE_CHUNKS = 6
-MAX_FEWSHOT = 4
-CHUNK_SIZE = 5000
-CHUNK_OVERLAP = 500
+GEMINI_VIDEO_MODEL = os.getenv(
+    "GEMINI_VIDEO_MODEL",
+    "veo-3.1-fast-generate-preview"
+)
 
 
-SYSTEM_PROMPT = """
+# ============================================================
+# OPENROUTER FREE
+# ============================================================
+
+OPENROUTER_KEY = os.getenv(
+    "OPENROUTER_API_KEY",
+    ""
+)
+
+OPENROUTER_FREE_MODEL = "openrouter/free"
+
+
+# ============================================================
+# GROQ FREE TIER
+# ============================================================
+
+GROQ_KEY = os.getenv(
+    "GROQ_API_KEY",
+    ""
+)
+
+GROQ_FAST_MODEL = os.getenv(
+    "GROQ_FAST_MODEL",
+    "openai/gpt-oss-20b"
+)
+
+GROQ_REASONING_MODEL = os.getenv(
+    "GROQ_REASONING_MODEL",
+    "openai/gpt-oss-20b"
+)
+
+GROQ_CODING_MODEL = os.getenv(
+    "GROQ_CODING_MODEL",
+    "qwen/qwen3-32b"
+)
+
+
+# ============================================================
+# POLLINATIONS IMAGE
+# ============================================================
+
+POLLINATIONS_KEY = os.getenv(
+    "POLLINATIONS_API_KEY",
+    ""
+)
+
+POLLINATIONS_ENABLED = os.getenv(
+    "POLLINATIONS_ENABLED",
+    "false"
+).lower() == "true"
+
+POLLINATIONS_IMAGE_MODEL = os.getenv(
+    "POLLINATIONS_IMAGE_MODEL",
+    "flux"
+)
+
+POLLINATIONS_BASE_URL = (
+    "https://gen.pollinations.ai"
+)
+
+
+# ============================================================
+# SYSTEM PROMPT
+# ============================================================
+
+SYSTEM = """
 Kamu adalah Designmanufaktur Super AI Agent.
 
-Konteks bisnis:
-- manufaktur
+Kamu adalah asisten AI praktis untuk pekerjaan:
+
 - bengkel las
-- fabrikasi
-- pagar
+- kanopi
 - tenda
-- produk custom besi/logam
-- penjualan online
-- konten dan pemasaran bisnis
+- pagar
+- rangka baja
+- hollow
+- pipa
+- fabrikasi
+- manufaktur
+- konstruksi ringan
+- desain produk custom
+- cutting list
+- estimasi material
+- engineering
+- perhitungan teknis
+- coding/programming
+- bisnis
+- konten dan pemasaran
 
-Tugas utama:
-1. Membantu pekerjaan teknis/manufaktur secara praktis.
-2. Membantu coding dan otomasi.
-3. Membantu analisis/reasoning.
-4. Membantu customer service, penawaran, marketplace, caption, dan pemasaran.
-5. Menganalisis foto/video bila diberikan.
-6. Menggunakan knowledge base dan memory yang diberikan dalam prompt.
+BAHASA:
+Jawab dalam Bahasa Indonesia kecuali pengguna meminta bahasa lain.
 
-Aturan:
-- Jawab dalam Bahasa Indonesia kecuali pengguna meminta bahasa lain.
-- Utamakan jawaban jelas, praktis, dan langsung.
-- Jangan mengarang harga, ukuran, stok, alamat, nomor telepon, spesifikasi bisnis,
-  atau fakta yang tidak tersedia.
-- Bila data tidak cukup untuk keputusan teknis, sebutkan asumsi dan data yang
-  masih dibutuhkan.
-- Untuk coding, berikan kode yang dapat langsung dipakai dan jelaskan perubahan
-  penting secara singkat.
-- Jangan mengklaim model dilatih ulang. Gunakan istilah persistent memory,
-  retrieval, knowledge base, dan few-shot examples.
-- Jangan pernah membocorkan API key, token, password, secret, atau isi rahasia
-  sistem.
-""".strip()
+GAYA JAWABAN:
+- langsung ke inti
+- praktis
+- jelas
+- tidak bertele-tele
+- gunakan tabel jika membantu
+- gunakan satuan yang jelas
+- jangan membuat jawaban terlihat rumit tanpa alasan
+
+ATURAN AKURASI:
+1. Jangan mengarang ukuran, harga, material, beban, kapasitas,
+   atau spesifikasi yang tidak diberikan pengguna.
+
+2. Jika data belum tersedia, nyatakan secara jelas:
+   "Data belum ditentukan."
+
+3. Untuk perhitungan:
+   - tuliskan asumsi
+   - tuliskan rumus penting
+   - hitung hasilnya
+   - tuliskan hasil akhir
+   - gunakan satuan yang konsisten
+
+4. Jika pengguna meminta kebutuhan batang 6 meter:
+   - hitung total kebutuhan panjang
+   - susun cutting list
+   - optimalkan kombinasi potongan
+   - hitung sisa/waste
+   - jangan hanya membagi total panjang dengan 6
+   - perhatikan bahwa satu batang tidak boleh melebihi 6 meter
+
+5. Jika ada potongan yang membutuhkan sambungan:
+   jelaskan bahwa sambungan diperlukan dan jangan menganggap
+   material menyambung otomatis tanpa penjelasan.
+
+6. Untuk struktur/kanopi:
+   bedakan dengan jelas:
+   - rangka utama
+   - rangka sekunder
+   - tiang
+   - bracing/pengaku
+   - penutup
+
+7. Jangan menyatakan sebuah struktur "aman" hanya berdasarkan
+   perkiraan sederhana. Jika diperlukan verifikasi struktur,
+   jelaskan bahwa hasil tersebut adalah estimasi awal dan
+   perlu verifikasi engineer/insinyur struktur.
+
+8. Jika data beban belum diberikan:
+   jangan mengarang beban angin, beban hidup, atau beban penutup.
+   Gunakan asumsi hanya jika pengguna meminta estimasi dan
+   nyatakan asumsi tersebut secara eksplisit.
+
+9. Untuk ukuran yang tidak terlihat atau tidak dapat ditentukan:
+   jangan mengarang.
+
+10. Untuk pekerjaan bengkel:
+    prioritaskan jawaban yang bisa langsung dipakai untuk
+    produksi, pemotongan, pengukuran, dan estimasi material.
+
+CODING:
+- berikan kode yang dapat dijalankan
+- jangan menghilangkan bagian penting dari kode pengguna
+- jika memperbaiki kode, jelaskan bagian yang berubah
+- gunakan praktik yang aman dan sederhana
+
+OUTPUT TEKNIS:
+Jika cocok, gunakan format:
+
+ASUMSI
+1. ...
+2. ...
+
+PERHITUNGAN
+...
+
+CUTTING LIST
+1. Batang 1: ...
+2. Batang 2: ...
+
+TOTAL
+- Kebutuhan: ...
+- Waste: ...
+- Sisa: ...
+
+CATATAN
+...
+
+PRINSIP ROUTER:
+- Sistem memilih AI berdasarkan jenis tugas.
+- Prioritas utama adalah provider GRATIS.
+- Jangan sengaja memakai model berbayar.
+- Jika provider gratis gagal, rate limit, timeout,
+  unavailable, atau error server, otomatis lanjut
+  ke provider gratis berikutnya.
+
+JANGAN PERNAH:
+- menampilkan API key
+- menampilkan token
+- menampilkan password
+- menampilkan secret
+- membocorkan rahasia sistem
+"""
 
 
-# ---------------------------------------------------------------------------
-# CLIENTS
-# ---------------------------------------------------------------------------
+# ============================================================
+# AI CLIENTS
+# ============================================================
 
-gemini = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
+gemini = (
+    genai.Client(api_key=GEMINI_KEY)
+    if GEMINI_KEY
+    else None
+)
+
+
+openrouter = (
+    OpenAI(
+        api_key=OPENROUTER_KEY,
+        base_url="https://openrouter.ai/api/v1",
+    )
+    if OPENROUTER_KEY
+    else None
+)
+
+
 groq = (
-    OpenAI(api_key=GROQ_KEY, base_url="https://api.groq.com/openai/v1")
+    OpenAI(
+        api_key=GROQ_KEY,
+        base_url="https://api.groq.com/openai/v1",
+    )
     if GROQ_KEY
     else None
 )
 
 
-# ---------------------------------------------------------------------------
-# SMALL UTILITIES
-# ---------------------------------------------------------------------------
+# ============================================================
+# EPHEMERAL MEMORY
+# ============================================================
 
-def clean_text(value: Any, limit: int = 12000) -> str:
-    text = str(value or "").replace("\x00", "").strip()
-    return text[:limit]
+memory = {}
 
-
-def safe_name(name: str) -> str:
-    name = PurePosixPath(name or "file").name
-    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
-    return name[:100] or "file"
+MAX_MEMORY = 20
 
 
-def user_memory_path(uid: str) -> str:
-    return f"users/{uid}.json"
+def history(uid):
+    return memory.setdefault(
+        uid,
+        []
+    )
 
 
-def user_knowledge_dir(uid: str) -> str:
-    return f"knowledge/{uid}"
-
-
-def user_examples_dir(uid: str) -> str:
-    return f"examples/{uid}"
-
-
-def json_bytes(obj: Any) -> bytes:
-    return json.dumps(
-        obj, ensure_ascii=False, indent=2
-    ).encode("utf-8")
-
-
-def split_chunks(text: str) -> list[str]:
-    text = clean_text(text, 200_000)
-    if not text:
-        return []
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = min(len(text), start + CHUNK_SIZE)
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-        if end >= len(text):
-            break
-        start = max(end - CHUNK_OVERLAP, start + 1)
-    return chunks
-
-
-def keywords(text: str) -> set[str]:
-    return {
-        w for w in re.findall(r"[a-zA-Z0-9_À-ÿ]{3,}", text.lower())
-        if w not in {
-            "yang", "dan", "atau", "untuk", "dengan", "dari", "pada",
-            "adalah", "ini", "itu", "saya", "kami", "kamu", "buat",
-            "bisa", "akan", "lebih", "agar", "dalam", "juga", "tidak",
+def remember(uid, role, content):
+    history(uid).append(
+        {
+            "role": role,
+            "content": content,
         }
-    }
-
-
-def relevance(query: str, text: str) -> float:
-    q = keywords(query)
-    if not q:
-        return 0.0
-    t = keywords(text)
-    if not t:
-        return 0.0
-    overlap = len(q & t)
-    return overlap / max(1, len(q))
-
-
-# ---------------------------------------------------------------------------
-# GITHUB PERSISTENT STORAGE
-# ---------------------------------------------------------------------------
-
-GITHUB_API = "https://api.github.com"
-
-
-def github_headers() -> dict[str, str]:
-    if not GITHUB_TOKEN:
-        raise RuntimeError("GITHUB_TOKEN belum tersedia.")
-    return {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "Content-Type": "application/json",
-    }
-
-
-async def github_request(
-    method: str,
-    path: str,
-    payload: Optional[dict[str, Any]] = None,
-) -> tuple[int, dict[str, Any]]:
-    url = f"{GITHUB_API}{path}"
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.request(
-            method,
-            url,
-            headers=github_headers(),
-            json=payload,
-        )
-    try:
-        data = response.json()
-    except Exception:
-        data = {"message": response.text}
-    return response.status_code, data
-
-
-async def github_get_file(path: str) -> tuple[Optional[bytes], Optional[str]]:
-    encoded = "/".join(
-        httpx.URL("").copy_with(path=p).path.lstrip("/")
-        for p in [path]
-    )
-    # The path segment is safely URL-encoded by httpx when passed as a URL.
-    url = (
-        f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/"
-        f"{path}?ref={GITHUB_BRANCH}"
-    )
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.get(url, headers=github_headers())
-
-    if response.status_code == 404:
-        return None, None
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"GitHub GET gagal ({response.status_code}): "
-            f"{response.text[:300]}"
-        )
-
-    data = response.json()
-    content = base64.b64decode(data["content"].replace("\n", ""))
-    return content, data.get("sha")
-
-
-async def github_put_file(
-    path: str,
-    content: bytes,
-    message: str,
-) -> None:
-    _, sha = await github_get_file(path)
-    payload: dict[str, Any] = {
-        "message": message,
-        "content": base64.b64encode(content).decode("ascii"),
-        "branch": GITHUB_BRANCH,
-    }
-    if sha:
-        payload["sha"] = sha
-
-    encoded_path = path
-    url = (
-        f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/"
-        f"{encoded_path}"
-    )
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.put(
-            url,
-            headers=github_headers(),
-            json=payload,
-        )
-    if response.status_code not in (200, 201):
-        raise RuntimeError(
-            f"GitHub PUT gagal ({response.status_code}): "
-            f"{response.text[:400]}"
-        )
-
-
-async def github_delete_file(path: str, message: str) -> bool:
-    _, sha = await github_get_file(path)
-    if not sha:
-        return False
-
-    payload = {
-        "message": message,
-        "sha": sha,
-        "branch": GITHUB_BRANCH,
-    }
-    url = (
-        f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/"
-        f"{path}"
-    )
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.delete(
-            url,
-            headers=github_headers(),
-            json=payload,
-        )
-    if response.status_code not in (200, 204):
-        raise RuntimeError(
-            f"GitHub DELETE gagal ({response.status_code}): "
-            f"{response.text[:400]}"
-        )
-    return True
-
-
-async def github_list_dir(path: str) -> list[dict[str, Any]]:
-    url = (
-        f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/"
-        f"{path}?ref={GITHUB_BRANCH}"
-    )
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.get(url, headers=github_headers())
-    if response.status_code == 404:
-        return []
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"GitHub LIST gagal ({response.status_code}): "
-            f"{response.text[:300]}"
-        )
-    data = response.json()
-    return data if isinstance(data, list) else []
-
-
-async def load_memory(uid: str) -> dict[str, Any]:
-    raw, _ = await github_get_file(user_memory_path(uid))
-    if not raw:
-        return {
-            "version": 1,
-            "user_id": uid,
-            "facts": [],
-            "history": [],
-        }
-    try:
-        obj = json.loads(raw.decode("utf-8"))
-        if not isinstance(obj, dict):
-            raise ValueError
-        obj.setdefault("version", 1)
-        obj.setdefault("user_id", uid)
-        obj.setdefault("facts", [])
-        obj.setdefault("history", [])
-        return obj
-    except Exception:
-        log.exception("Memory JSON rusak untuk user %s", uid)
-        return {
-            "version": 1,
-            "user_id": uid,
-            "facts": [],
-            "history": [],
-        }
-
-
-async def save_memory(uid: str, mem: dict[str, Any]) -> None:
-    mem["history"] = mem.get("history", [])[-MAX_HISTORY:]
-    mem["facts"] = mem.get("facts", [])[-100:]
-    await github_put_file(
-        user_memory_path(uid),
-        json_bytes(mem),
-        f"Update memory user {uid}",
     )
 
-
-async def add_history(uid: str, role: str, content: str) -> None:
-    mem = await load_memory(uid)
-    mem["history"].append({
-        "role": role,
-        "content": clean_text(content, 12000),
-        "ts": int(time.time()),
-    })
-    await save_memory(uid, mem)
-
-
-async def remember_fact(uid: str, fact: str) -> None:
-    mem = await load_memory(uid)
-    fact = clean_text(fact, 2000)
-    if fact and fact not in mem["facts"]:
-        mem["facts"].append(fact)
-    await save_memory(uid, mem)
-
-
-async def forget_fact(uid: str, query: str) -> int:
-    mem = await load_memory(uid)
-    old = list(mem.get("facts", []))
-    q = query.lower().strip()
-    mem["facts"] = [
-        f for f in old
-        if q not in f.lower()
+    memory[uid] = history(uid)[
+        -MAX_MEMORY:
     ]
-    removed = len(old) - len(mem["facts"])
-    if removed:
-        await save_memory(uid, mem)
-    return removed
 
 
-async def reset_user(uid: str) -> None:
-    await github_delete_file(
-        user_memory_path(uid),
-        f"Reset memory user {uid}",
-    )
+def build_messages(uid, text, task):
 
-    for directory in (user_knowledge_dir(uid), user_examples_dir(uid)):
-        items = await github_list_dir(directory)
-        for item in items:
-            if item.get("type") == "file" and item.get("path"):
-                try:
-                    await github_delete_file(
-                        item["path"],
-                        f"Reset data user {uid}",
-                    )
-                except Exception:
-                    log.exception("Gagal menghapus %s", item.get("path"))
+    task_hint = {
 
+        "coding": """
+TUGAS CODING.
 
-async def retrieve_knowledge(uid: str, query: str) -> list[str]:
-    items = await github_list_dir(user_knowledge_dir(uid))
-    scored: list[tuple[float, str]] = []
+Prioritaskan:
+- kode yang dapat dijalankan
+- ketepatan sintaks
+- debugging
+- struktur program
+- solusi praktis
 
-    for item in items:
-        if item.get("type") != "file":
-            continue
-        path = item.get("path")
-        if not path:
-            continue
-        try:
-            raw, _ = await github_get_file(path)
-            if not raw:
-                continue
-            obj = json.loads(raw.decode("utf-8"))
-            text = obj.get("text", "")
-            score = relevance(query, text)
-            if score > 0:
-                scored.append((score, text))
-        except Exception:
-            log.exception("Gagal membaca knowledge %s", path)
+Jika pengguna memberikan kode,
+analisis kode tersebut sebelum mengubahnya.
+""",
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [x[1] for x in scored[:MAX_KNOWLEDGE_CHUNKS]]
+        "reasoning": """
+TUGAS REASONING.
 
+Analisis masalah secara sistematis.
+Jangan langsung membuat kesimpulan.
+Periksa kemungkinan penyebab dan berikan
+kesimpulan paling masuk akal.
+""",
 
-async def retrieve_examples(uid: str, query: str) -> list[dict[str, str]]:
-    items = await github_list_dir(user_examples_dir(uid))
-    scored: list[tuple[float, dict[str, str]]] = []
+        "technical": """
+TUGAS TEKNIK/MANUFAKTUR.
 
-    for item in items:
-        if item.get("type") != "file":
-            continue
-        path = item.get("path")
-        if not path:
-            continue
-        try:
-            raw, _ = await github_get_file(path)
-            if not raw:
-                continue
-            obj = json.loads(raw.decode("utf-8"))
-            q = obj.get("question", "")
-            a = obj.get("answer", "")
-            score = relevance(query, q + " " + a)
-            if score > 0:
-                scored.append((score, {
-                    "question": q,
-                    "answer": a,
-                    "category": obj.get("category", "general"),
-                }))
-        except Exception:
-            log.exception("Gagal membaca example %s", path)
+Prioritaskan:
+- ukuran
+- material
+- rangka
+- fabrikasi
+- cutting list
+- jumlah batang
+- sambungan
+- efisiensi material
+- asumsi teknik
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    return [x[1] for x in scored[:MAX_FEWSHOT]]
+Untuk perhitungan rangka, bedakan:
+rangka utama, rangka sekunder, tiang,
+dan pengaku.
 
+Jangan mengarang data yang tidak diberikan.
 
-async def save_example(
-    uid: str,
-    question: str,
-    answer: str,
-    category: str,
-) -> None:
-    example_id = uuid.uuid4().hex
-    path = f"{user_examples_dir(uid)}/{example_id}.json"
-    obj = {
-        "version": 1,
-        "user_id": uid,
-        "question": clean_text(question, 5000),
-        "answer": clean_text(answer, 8000),
-        "category": category,
-        "ts": int(time.time()),
-    }
-    await github_put_file(
-        path,
-        json_bytes(obj),
-        f"Add few-shot example user {uid}",
-    )
+Jika pengguna meminta jumlah batang 6 meter,
+buat kombinasi pemotongan per batang dan
+hitung sisa material.
+""",
 
+        "math": """
+TUGAS MATEMATIKA.
 
-# ---------------------------------------------------------------------------
-# KNOWLEDGE EXTRACTION
-# ---------------------------------------------------------------------------
+Hitung dengan teliti.
+Tampilkan rumus penting.
+Tampilkan satuan.
+Periksa kembali hasil sebelum menjawab.
+""",
 
-TEXT_EXTENSIONS = {
-    ".txt", ".md", ".csv", ".json", ".py", ".js", ".ts",
-    ".html", ".css", ".xml", ".yaml", ".yml",
-}
+        "creative": """
+TUGAS KREATIF.
 
+Buat hasil yang siap digunakan,
+praktis, menarik, dan sesuai tujuan.
+""",
 
-def extract_document(data: bytes, filename: str) -> str:
-    ext = PurePosixPath(filename.lower()).suffix
+        "general": """
+TUGAS UMUM.
 
-    if ext in TEXT_EXTENSIONS:
-        return data.decode("utf-8", errors="replace")
+Jawab langsung, jelas, dan berguna.
+""",
 
-    if ext == ".pdf":
-        if PdfReader is None:
-            raise RuntimeError("Library pypdf belum tersedia.")
-        reader = PdfReader(io.BytesIO(data))
-        pages = []
-        for page in reader.pages:
-            pages.append(page.extract_text() or "")
-        return "\n\n".join(pages)
+    }.get(task, "")
 
-    if ext == ".docx":
-        if Document is None:
-            raise RuntimeError("Library python-docx belum tersedia.")
-        doc = Document(io.BytesIO(data))
-        return "\n".join(p.text for p in doc.paragraphs)
-
-    raise RuntimeError(
-        "Format tidak didukung. Gunakan TXT, MD, CSV, JSON, PY, JS, TS, "
-        "HTML, CSS, XML, YAML, YML, PDF, atau DOCX."
-    )
-
-
-async def ingest_knowledge(
-    uid: str,
-    filename: str,
-    data: bytes,
-) -> int:
-    text = extract_document(data, filename)
-    chunks = split_chunks(text)
-    if not chunks:
-        raise RuntimeError("Dokumen tidak berisi teks yang dapat dipelajari.")
-
-    stem = safe_name(filename)
-    total = 0
-
-    for index, chunk in enumerate(chunks):
-        path = (
-            f"{user_knowledge_dir(uid)}/"
-            f"{stem}.{index:04d}.json"
-        )
-        obj = {
-            "version": 1,
-            "user_id": uid,
-            "source": filename,
-            "chunk": index,
-            "text": chunk,
-            "ts": int(time.time()),
+    return [
+        {
+            "role": "system",
+            "content": (
+                SYSTEM
+                + "\n\n"
+                + task_hint
+            ),
         }
-        await github_put_file(
-            path,
-            json_bytes(obj),
-            f"Add knowledge {filename} chunk {index}",
-        )
-        total += 1
-
-    return total
+    ] + history(uid) + [
+        {
+            "role": "user",
+            "content": text,
+        }
+    ]
 
 
-# ---------------------------------------------------------------------------
-# ROUTER
-# ---------------------------------------------------------------------------
+# ============================================================
+# TASK CLASSIFIER
+# ============================================================
 
-def classify_request(text: str) -> str:
-    t = text.lower()
+def classify_task(text):
+
+    t = (
+        text or ""
+    ).lower()
 
     coding = [
-        "python", "javascript", "typescript", "php", "html", "css",
-        "sql", "api", "debug", "bug", "error", "coding", "kode",
-        "program", "programming", "github", "vercel", "webhook",
-        "function", "class", "script", "json",
+        "python",
+        "javascript",
+        "typescript",
+        "php",
+        "html",
+        "css",
+        "sql",
+        "api",
+        "coding",
+        "kode",
+        "program",
+        "programming",
+        "bug",
+        "error",
+        "debug",
+        "github",
+        "vercel",
+        "function",
+        "import ",
+        "async ",
+        "def ",
     ]
+
+    technical = [
+        "tenda",
+        "kanopi",
+        "rangka",
+        "hollow",
+        "pipa",
+        "baja",
+        "las",
+        "fabrikasi",
+        "manufaktur",
+        "produksi",
+        "material",
+        "plat",
+        "besi",
+        "aluminium",
+        "konstruksi",
+        "ukuran",
+        "dimensi",
+        "pagar",
+        "bengkel",
+        "welding",
+        "engineering",
+        "cutting list",
+        "potongan batang",
+        "batang 6 meter",
+        "rangka utama",
+        "rangka sekunder",
+    ]
+
     reasoning = [
-        "analisis", "analysis", "hitung", "perhitungan", "bandingkan",
-        "strategi", "kenapa", "mengapa", "sebab", "logika", "reasoning",
-        "evaluasi", "risiko", "optimasi", "optimal", "keputusan",
-    ]
-    manufacturing = [
-        "manufaktur", "fabrikasi", "las", "welding", "pagar", "tenda",
-        "besi", "baja", "stainless", "aluminium", "plat", "pipa",
-        "rangka", "cutting", "bending", "finishing", "produksi",
-        "material", "konstruksi", "ukuran", "ketebalan", "fabrication",
+        "analisis",
+        "analisa",
+        "kenapa",
+        "mengapa",
+        "bandingkan",
+        "perbandingan",
+        "strategi",
+        "logika",
+        "alasan",
+        "evaluasi",
+        "pecahkan",
+        "solusi terbaik",
+        "reasoning",
     ]
 
-    if any(k in t for k in coding):
+    math = [
+        "hitung",
+        "perhitungan",
+        "berapa",
+        "rumus",
+        "luas",
+        "volume",
+        "persentase",
+        "matematika",
+        "kg",
+        "meter",
+        "mm",
+        "cm",
+        "m2",
+        "m²",
+    ]
+
+    creative = [
+        "caption",
+        "iklan",
+        "promosi",
+        "slogan",
+        "desain",
+        "buatkan gambar",
+        "ide konten",
+        "copywriting",
+    ]
+
+    # CODING paling tinggi
+    if any(
+        x in t
+        for x in coding
+    ):
         return "coding"
-    if any(k in t for k in reasoning):
+
+    # TECHNICAL harus sebelum math.
+    # Contoh:
+    # "berapa batang hollow untuk kanopi"
+    # harus masuk technical,
+    # bukan math.
+    if any(
+        x in t
+        for x in technical
+    ):
+        return "technical"
+
+    if any(
+        x in t
+        for x in math
+    ):
+        return "math"
+
+    if any(
+        x in t
+        for x in reasoning
+    ):
         return "reasoning"
-    if any(k in t for k in manufacturing):
-        return "manufacturing"
-    return "chat"
+
+    if any(
+        x in t
+        for x in creative
+    ):
+        return "creative"
+
+    return "general"
 
 
-async def build_prompt(uid: str, user_text: str) -> str:
-    mem = await load_memory(uid)
-    knowledge = await retrieve_knowledge(uid, user_text)
-    examples = await retrieve_examples(uid, user_text)
+# ============================================================
+# OPENROUTER
+# ============================================================
 
-    history = mem.get("history", [])[-MAX_HISTORY:]
-    facts = mem.get("facts", [])
+def call_openrouter(
+    uid,
+    text,
+    task,
+):
 
-    parts = [SYSTEM_PROMPT]
-
-    if facts:
-        parts.append(
-            "PERSISTENT MEMORY / FAKTA PENGGUNA:\n- "
-            + "\n- ".join(clean_text(x, 1000) for x in facts[-50:])
+    if not openrouter:
+        raise RuntimeError(
+            "OPENROUTER_API_KEY belum tersedia."
         )
 
-    if history:
-        parts.append(
-            "RIWAYAT PERCAKAPAN TERBARU:\n"
-            + "\n".join(
-                f"{m.get('role')}: {clean_text(m.get('content'), 4000)}"
-                for m in history
-            )
+    r = openrouter.chat.completions.create(
+        model=OPENROUTER_FREE_MODEL,
+        messages=build_messages(
+            uid,
+            text,
+            task,
+        ),
+        max_tokens=4096,
+        extra_headers={
+            "HTTP-Referer":
+                "https://designmanufaktur.vercel.app",
+            "X-Title":
+                "Designmanufaktur Super AI Agent",
+        },
+    )
+
+    answer = (
+        r.choices[0].message.content
+        or ""
+    )
+
+    if not answer.strip():
+        raise RuntimeError(
+            "OpenRouter Free mengembalikan "
+            "jawaban kosong."
         )
 
-    if knowledge:
-        parts.append(
-            "KNOWLEDGE BASE RELEVAN:\n"
-            + "\n\n---\n\n".join(knowledge)
+    selected_model = (
+        getattr(
+            r,
+            "model",
+            None,
         )
+        or OPENROUTER_FREE_MODEL
+    )
 
-    if examples:
-        parts.append(
-            "FEW-SHOT EXAMPLES RELEVAN:\n"
-            + "\n\n".join(
-                f"Contoh {i+1} ({e.get('category')}):\n"
-                f"Q: {e.get('question')}\n"
-                f"A: {e.get('answer')}"
-                for i, e in enumerate(examples)
-            )
-        )
-
-    parts.append(f"PESAN PENGGUNA:\n{user_text}\n\nJawab pesan pengguna.")
-    return "\n\n".join(parts)
-
-
-async def _gemini_generate(model: str, contents: Any, config: Any = None) -> Any:
-    if not gemini:
-        raise RuntimeError("Gemini tidak tersedia.")
-    kwargs = {"model": model, "contents": contents}
-    if config is not None:
-        kwargs["config"] = config
-    return await asyncio.to_thread(gemini.models.generate_content, **kwargs)
-
-
-async def _gemini_call_with_fallback(contents: Any, config: Any = None) -> tuple[Any, str]:
-    """Try the configured model first, then safe Gemini fallbacks.
-
-    This protects the bot when a Google API key/project cannot access the
-    configured model. The preferred model remains GEMINI_MODEL.
-    """
-    global GEMINI_ACTIVE_MODEL
-    if not gemini:
-        raise RuntimeError("Gemini tidak tersedia.")
-
-    candidates = []
-    for model in [GEMINI_ACTIVE_MODEL, GEMINI_MODEL, *GEMINI_FALLBACK_MODELS]:
-        model = normalize_gemini_model(model)
-        if model and model not in candidates:
-            candidates.append(model)
-
-    errors = []
-    for model in candidates:
-        try:
-            response = await _gemini_generate(model, contents, config)
-            GEMINI_ACTIVE_MODEL = model
-            return response, model
-        except Exception as exc:
-            message = str(exc)
-            errors.append(f"{model}: {message[:220]}")
-            log.warning("Gemini model %s gagal: %s", model, message[:300])
-
-    raise RuntimeError("Semua model Gemini gagal. " + " | ".join(errors))
-
-
-async def call_gemini(uid: str, text: str) -> str:
-    if not gemini:
-        raise RuntimeError("Gemini tidak tersedia.")
-    prompt = await build_prompt(uid, text)
-    response, _ = await _gemini_call_with_fallback(prompt)
-    answer = clean_text(getattr(response, "text", ""), 16000)
-    if not answer:
-        raise RuntimeError("Gemini tidak mengembalikan jawaban.")
-    return answer
-
-
-async def call_groq(
-    uid: str,
-    text: str,
-    model: str,
-) -> str:
-    if not groq:
-        raise RuntimeError("Groq tidak tersedia.")
-    prompt = await build_prompt(uid, text)
-    # Keep Groq fallback payload safely bounded; GitHub memory/knowledge can
-    # otherwise make the OpenAI-compatible request too large (HTTP 413).
-    if len(prompt) > 28000:
-        prompt = (
-            prompt[:6000]
-            + "\n\n[RIWAYAT/KNOWLEDGE DIPANGKAS UNTUK BATAS PAYLOAD]\n\n"
-            + prompt[-22000:]
-        )
-
-    def _call() -> str:
-        response = groq.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.4,
-        )
-        return clean_text(
-            response.choices[0].message.content
-            if response.choices
-            else "",
-            16000,
-        )
-
-    answer = await asyncio.to_thread(_call)
-    if not answer:
-        raise RuntimeError("Groq tidak mengembalikan jawaban.")
-    return answer
-
-
-async def route_chat(uid: str, text: str) -> tuple[str, str, str]:
-    category = classify_request(text)
-
-    if category == "coding":
-        candidates = [
-            ("Groq Coding", lambda: call_groq(uid, text, GROQ_CODING_MODEL)),
-            ("Gemini", lambda: call_gemini(uid, text)),
-        ]
-    elif category == "reasoning":
-        candidates = [
-            ("Groq Reasoning", lambda: call_groq(uid, text, GROQ_REASONING_MODEL)),
-            ("Gemini", lambda: call_gemini(uid, text)),
-        ]
-    elif category == "manufacturing":
-        candidates = [
-            ("Gemini", lambda: call_gemini(uid, text)),
-            ("Groq Reasoning", lambda: call_groq(uid, text, GROQ_REASONING_MODEL)),
-        ]
-    else:
-        candidates = [
-            ("Gemini", lambda: call_gemini(uid, text)),
-            ("Groq Fast", lambda: call_groq(uid, text, GROQ_FAST_MODEL)),
-        ]
-
-    errors = []
-    for name, fn in candidates:
-        try:
-            answer = await fn()
-            if answer:
-                return answer, name, category
-        except Exception as exc:
-            log.exception("Provider %s gagal", name)
-            errors.append(f"{name}: {str(exc)[:180]}")
-
-    raise RuntimeError(
-        "Semua provider untuk kategori "
-        f"{category} gagal. " + " | ".join(errors)
+    return (
+        answer,
+        selected_model,
     )
 
 
-# ---------------------------------------------------------------------------
-# TELEGRAM
-# ---------------------------------------------------------------------------
+# ============================================================
+# GEMINI
+# ============================================================
+
+def call_gemini(
+    uid,
+    text,
+    task,
+):
+
+    if not gemini:
+        raise RuntimeError(
+            "GEMINI_API_KEY belum tersedia."
+        )
+
+    task_hint = {
+
+        "coding":
+            "Berikan kode yang dapat dijalankan "
+            "dan jelaskan perubahan penting.",
+
+        "reasoning":
+            "Analisis masalah secara teliti "
+            "sebelum memberi kesimpulan.",
+
+        "technical":
+            """
+Gunakan pertimbangan teknik/manufaktur yang praktis.
+
+Untuk perhitungan material:
+- jangan mengarang ukuran
+- tampilkan asumsi
+- hitung panjang
+- buat cutting list
+- hitung waste
+- bedakan rangka utama dan sekunder
+""",
+
+        "math":
+            "Hitung secara teliti dan tunjukkan asumsi.",
+
+        "creative":
+            "Buat hasil kreatif yang siap digunakan.",
+
+        "general":
+            "Jawab langsung dan jelas.",
+
+    }.get(
+        task,
+        "",
+    )
+
+    prompt = (
+        SYSTEM
+        + "\n\n"
+        + task_hint
+        + "\n\n"
+    )
+
+    for m in history(uid):
+
+        prompt += (
+            f"{m['role']}: "
+            f"{m['content']}\n"
+        )
+
+    prompt += (
+        f"user: {text}"
+    )
+
+    r = gemini.models.generate_content(
+        model=GEMINI_CHAT_MODEL,
+        contents=prompt,
+    )
+
+    answer = (
+        r.text
+        or ""
+    )
+
+    if not answer.strip():
+        raise RuntimeError(
+            "Gemini mengembalikan "
+            "jawaban kosong."
+        )
+
+    return (
+        answer,
+        GEMINI_CHAT_MODEL,
+    )
+
+
+# ============================================================
+# GROQ
+# ============================================================
+
+def call_groq(
+    uid,
+    text,
+    task,
+):
+
+    if not groq:
+        raise RuntimeError(
+            "GROQ_API_KEY belum tersedia."
+        )
+
+    if task == "coding":
+
+        model = GROQ_CODING_MODEL
+
+    elif task in (
+        "reasoning",
+        "math",
+    ):
+
+        model = GROQ_REASONING_MODEL
+
+    else:
+
+        model = GROQ_FAST_MODEL
+
+    r = groq.chat.completions.create(
+        model=model,
+        messages=build_messages(
+            uid,
+            text,
+            task,
+        ),
+        max_tokens=4096,
+    )
+
+    answer = (
+        r.choices[0].message.content
+        or ""
+    )
+
+    if not answer.strip():
+        raise RuntimeError(
+            "Groq mengembalikan "
+            "jawaban kosong."
+        )
+
+    return (
+        answer,
+        model,
+    )
+
+
+# ============================================================
+# SMART CHAT ROUTER — FINAL
+# ============================================================
+
+def chat_router(
+    uid,
+    text,
+):
+
+    task = classify_task(
+        text
+    )
+
+    log.info(
+        "TASK=%s | text=%s",
+        task,
+        text[:120],
+    )
+
+    errors = []
+
+    # --------------------------------------------------------
+    # PRIORITAS PROVIDER
+    #
+    # TECHNICAL:
+    # OpenRouter Free → Gemini → Groq
+    #
+    # CODING/REASONING/MATH:
+    # OpenRouter Free → Groq → Gemini
+    #
+    # GENERAL/CREATIVE:
+    # OpenRouter Free → Gemini → Groq
+    # --------------------------------------------------------
+
+    if task == "technical":
+
+        providers = [
+
+            (
+                "OpenRouter Free",
+                lambda:
+                    call_openrouter(
+                        uid,
+                        text,
+                        task,
+                    ),
+            ),
+
+            (
+                "Gemini",
+                lambda:
+                    call_gemini(
+                        uid,
+                        text,
+                        task,
+                    ),
+            ),
+
+            (
+                "Groq Free Tier",
+                lambda:
+                    call_groq(
+                        uid,
+                        text,
+                        task,
+                    ),
+            ),
+
+        ]
+
+    elif task in (
+        "coding",
+        "reasoning",
+        "math",
+    ):
+
+        providers = [
+
+            (
+                "OpenRouter Free",
+                lambda:
+                    call_openrouter(
+                        uid,
+                        text,
+                        task,
+                    ),
+            ),
+
+            (
+                "Groq Free Tier",
+                lambda:
+                    call_groq(
+                        uid,
+                        text,
+                        task,
+                    ),
+            ),
+
+            (
+                "Gemini",
+                lambda:
+                    call_gemini(
+                        uid,
+                        text,
+                        task,
+                    ),
+            ),
+
+        ]
+
+    else:
+
+        providers = [
+
+            (
+                "OpenRouter Free",
+                lambda:
+                    call_openrouter(
+                        uid,
+                        text,
+                        task,
+                    ),
+            ),
+
+            (
+                "Gemini",
+                lambda:
+                    call_gemini(
+                        uid,
+                        text,
+                        task,
+                    ),
+            ),
+
+            (
+                "Groq Free Tier",
+                lambda:
+                    call_groq(
+                        uid,
+                        text,
+                        task,
+                    ),
+            ),
+
+        ]
+
+    # --------------------------------------------------------
+    # AUTO FALLBACK
+    # --------------------------------------------------------
+
+    for provider_name, fn in providers:
+
+        try:
+
+            log.info(
+                "TRY PROVIDER | "
+                "task=%s | provider=%s",
+                task,
+                provider_name,
+            )
+
+            answer, model = fn()
+
+            if (
+                not answer
+                or not answer.strip()
+            ):
+                raise RuntimeError(
+                    "Provider mengembalikan "
+                    "jawaban kosong."
+                )
+
+            log.info(
+                "CHAT SUCCESS | "
+                "task=%s | provider=%s | model=%s",
+                task,
+                provider_name,
+                model,
+            )
+
+            return (
+                answer,
+                provider_name,
+                model,
+                task,
+            )
+
+        except Exception as e:
+
+            error_text = str(e)
+
+            errors.append(
+                f"{provider_name}: "
+                f"{error_text[:300]}"
+            )
+
+            temporary_error = any(
+                code in error_text
+                for code in (
+                    "429",
+                    "500",
+                    "502",
+                    "503",
+                    "504",
+                    "timeout",
+                    "Timeout",
+                    "temporarily",
+                    "UNAVAILABLE",
+                    "Unavailable",
+                    "rate limit",
+                    "Rate limit",
+                    "high demand",
+                )
+            )
+
+            if temporary_error:
+
+                log.warning(
+                    "PROVIDER TEMPORARILY "
+                    "UNAVAILABLE | "
+                    "provider=%s | error=%s",
+                    provider_name,
+                    error_text[:300],
+                )
+
+            else:
+
+                log.error(
+                    "PROVIDER FAILED | "
+                    "provider=%s | error=%s",
+                    provider_name,
+                    error_text[:300],
+                )
+
+            # SELALU lanjut provider berikutnya.
+            continue
+
+    # --------------------------------------------------------
+    # SEMUA PROVIDER GAGAL
+    # --------------------------------------------------------
+
+    log.error(
+        "ALL FREE PROVIDERS FAILED | "
+        "task=%s | errors=%s",
+        task,
+        " | ".join(errors),
+    )
+
+    raise RuntimeError(
+        "Semua provider AI GRATIS untuk "
+        f"kategori {task} sedang tidak tersedia. "
+        "Sistem sudah mencoba seluruh "
+        "fallback gratis."
+    )
+
+
+# ============================================================
+# TELEGRAM API
+# ============================================================
 
 async def tg(
-    method: str,
-    payload: Optional[dict[str, Any]] = None,
-) -> dict[str, Any]:
+    method,
+    data,
+):
+
     if not TELEGRAM_TOKEN:
-        raise RuntimeError("TELEGRAM_TOKEN belum tersedia.")
-
-    async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}",
-            json=payload or {},
-        )
-
-    try:
-        data = response.json()
-    except Exception:
-        data = {}
-
-    if response.status_code >= 400 or not data.get("ok"):
         raise RuntimeError(
-            f"Telegram {method} gagal: {response.text[:400]}"
+            "TELEGRAM_TOKEN belum diatur."
         )
-    return data
 
+    async with httpx.AsyncClient(
+        timeout=180
+    ) as client:
 
-async def tg_file(file_id: str) -> tuple[bytes, str]:
-    data = await tg("getFile", {"file_id": file_id})
-    path = data["result"]["file_path"]
-
-    async with httpx.AsyncClient(timeout=60) as client:
-        response = await client.get(
-            f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{path}"
+        r = await client.post(
+            (
+                "https://api.telegram.org/"
+                f"bot{TELEGRAM_TOKEN}/"
+                f"{method}"
+            ),
+            json=data,
         )
-    response.raise_for_status()
 
-    if len(response.content) > MAX_TELEGRAM_DOWNLOAD:
-        raise RuntimeError("File lebih besar dari 20 MB.")
+        r.raise_for_status()
 
-    return response.content, path
+        result = r.json()
+
+    if not result.get("ok"):
+
+        raise RuntimeError(
+            str(result)
+        )
+
+    return result
 
 
-async def send_text(chat_id: int | str, text: str) -> None:
-    text = clean_text(text, 20000) or "Tidak ada jawaban."
-    for i in range(0, len(text), 3900):
+# ============================================================
+# TELEGRAM FILE
+# ============================================================
+
+async def tg_file(
+    file_id
+):
+
+    result = await tg(
+        "getFile",
+        {
+            "file_id": file_id
+        },
+    )
+
+    path = (
+        result["result"]["file_path"]
+    )
+
+    async with httpx.AsyncClient(
+        timeout=180
+    ) as client:
+
+        r = await client.get(
+            (
+                "https://api.telegram.org/"
+                f"file/bot{TELEGRAM_TOKEN}/"
+                f"{path}"
+            )
+        )
+
+        r.raise_for_status()
+
+    return (
+        r.content,
+        path,
+    )
+
+
+# ============================================================
+# TELEGRAM SEND TEXT
+# ============================================================
+
+async def send_text(
+    chat_id,
+    text,
+):
+
+    text = (
+        text
+        or "Tidak ada jawaban."
+    )
+
+    # Telegram memiliki batas pesan.
+    # Pecah menjadi beberapa pesan.
+    for i in range(
+        0,
+        len(text),
+        3900,
+    ):
+
         await tg(
             "sendMessage",
             {
                 "chat_id": chat_id,
-                "text": text[i:i + 3900],
+                "text": text[
+                    i:i + 3900
+                ],
             },
         )
 
 
-async def send_document(
-    chat_id: int | str,
-    data: bytes,
-    filename: str,
-) -> None:
-    async with httpx.AsyncClient(timeout=120) as client:
-        response = await client.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
-            data={"chat_id": str(chat_id)},
+# ============================================================
+# SEND PHOTO
+# ============================================================
+
+async def send_photo(
+    chat_id,
+    data,
+):
+
+    async with httpx.AsyncClient(
+        timeout=180
+    ) as client:
+
+        r = await client.post(
+            (
+                "https://api.telegram.org/"
+                f"bot{TELEGRAM_TOKEN}/"
+                "sendPhoto"
+            ),
+            data={
+                "chat_id":
+                    str(chat_id)
+            },
             files={
-                "document": (
-                    safe_name(filename),
+                "photo": (
+                    "image.png",
                     data,
-                    mimetypes.guess_type(filename)[0] or "application/octet-stream",
+                    "image/png",
                 )
             },
         )
-    response.raise_for_status()
+
+        r.raise_for_status()
 
 
-async def send_photo(chat_id: int | str, data: bytes) -> None:
-    async with httpx.AsyncClient(timeout=120) as client:
-        response = await client.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
-            data={"chat_id": str(chat_id)},
-            files={"photo": ("image.png", data, "image/png")},
+# ============================================================
+# SEND VIDEO
+# ============================================================
+
+async def send_video(
+    chat_id,
+    data,
+):
+
+    async with httpx.AsyncClient(
+        timeout=300
+    ) as client:
+
+        r = await client.post(
+            (
+                "https://api.telegram.org/"
+                f"bot{TELEGRAM_TOKEN}/"
+                "sendVideo"
+            ),
+            data={
+                "chat_id":
+                    str(chat_id)
+            },
+            files={
+                "video": (
+                    "video.mp4",
+                    data,
+                    "video/mp4",
+                )
+            },
         )
-    response.raise_for_status()
+
+        r.raise_for_status()
 
 
-async def send_video(chat_id: int | str, data: bytes) -> None:
-    async with httpx.AsyncClient(timeout=180) as client:
-        response = await client.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo",
-            data={"chat_id": str(chat_id)},
-            files={"video": ("video.mp4", data, "video/mp4")},
-        )
-    response.raise_for_status()
+# ============================================================
+# GEMINI VISION
+# ============================================================
 
+def analyze_image(
+    data,
+    mime,
+    prompt,
+):
 
-# ---------------------------------------------------------------------------
-# MULTIMODAL
-# ---------------------------------------------------------------------------
-
-def extract_inline_image(response: Any) -> Optional[bytes]:
-    for candidate in getattr(response, "candidates", []) or []:
-        content = getattr(candidate, "content", None)
-        for part in getattr(content, "parts", []) or []:
-            inline = getattr(part, "inline_data", None)
-            if inline and getattr(inline, "data", None):
-                return inline.data
-    return None
-
-
-async def analyze_image(data: bytes, mime: str, prompt: str) -> str:
     if not gemini:
-        raise RuntimeError("Gemini diperlukan untuk analisis foto.")
 
-    response, _ = await _gemini_call_with_fallback([
-        types.Part.from_bytes(data=data, mime_type=mime),
-        SYSTEM_PROMPT + "\n\n" + prompt,
-    ])
-    answer = clean_text(getattr(response, "text", ""), 16000)
-    if not answer:
-        raise RuntimeError("Gemini tidak mengembalikan analisis gambar.")
-    return answer
-
-
-async def analyze_video(data: bytes, mime: str, prompt: str) -> str:
-    if not gemini:
-        raise RuntimeError("Gemini diperlukan untuk analisis video.")
-
-    def _upload():
-        return gemini.files.upload(
-            file=types.Part.from_bytes(data=data, mime_type=mime)
+        raise RuntimeError(
+            "Gemini belum dikonfigurasi."
         )
 
-    uploaded = await asyncio.to_thread(_upload)
+    errors = []
+
+    # --------------------------------------------------------
+    # GEMINI VISION
+    # --------------------------------------------------------
+
+    try:
+
+        r = gemini.models.generate_content(
+            model=GEMINI_CHAT_MODEL,
+            contents=[
+                types.Part.from_bytes(
+                    data=data,
+                    mime_type=mime,
+                ),
+                (
+                    SYSTEM
+                    + "\n\n"
+                    + prompt
+                ),
+            ],
+        )
+
+        if r.text:
+
+            return (
+                r.text,
+                GEMINI_CHAT_MODEL,
+            )
+
+    except Exception as e:
+
+        errors.append(
+            "Gemini Vision: "
+            + str(e)[:220]
+        )
+
+    # --------------------------------------------------------
+    # OPENROUTER VISION FALLBACK
+    # --------------------------------------------------------
+
+    if openrouter:
+
+        try:
+
+            b64 = (
+                base64.b64encode(
+                    data
+                ).decode()
+            )
+
+            content = [
+
+                {
+                    "type": "text",
+                    "text": (
+                        SYSTEM
+                        + "\n\n"
+                        + prompt
+                    ),
+                },
+
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url":
+                            (
+                                f"data:{mime};"
+                                f"base64,{b64}"
+                            )
+                    },
+                },
+
+            ]
+
+            r = (
+                openrouter
+                .chat
+                .completions
+                .create(
+                    model=OPENROUTER_FREE_MODEL,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": content,
+                        }
+                    ],
+                    max_tokens=4096,
+                )
+            )
+
+            answer = (
+                r.choices[0]
+                .message
+                .content
+                or ""
+            )
+
+            if answer.strip():
+
+                return (
+                    answer,
+                    getattr(
+                        r,
+                        "model",
+                        OPENROUTER_FREE_MODEL,
+                    ),
+                )
+
+        except Exception as e:
+
+            errors.append(
+                "OpenRouter Free Vision: "
+                + str(e)[:220]
+            )
+
+    raise RuntimeError(
+        "Semua provider vision gratis gagal: "
+        + " | ".join(errors)
+    )
+
+
+# ============================================================
+# GEMINI VIDEO ANALYSIS
+# ============================================================
+
+def analyze_video(
+    data,
+    mime,
+    prompt,
+):
+
+    if not gemini:
+
+        raise RuntimeError(
+            "Gemini diperlukan "
+            "untuk analisis video."
+        )
+
+    uploaded = gemini.files.upload(
+        file=types.Part.from_bytes(
+            data=data,
+            mime_type=mime,
+        )
+    )
 
     for _ in range(60):
-        file_obj = await asyncio.to_thread(
-            gemini.files.get,
-            name=uploaded.name,
+
+        f = gemini.files.get(
+            name=uploaded.name
         )
+
         state = getattr(
-            getattr(file_obj, "state", None),
+            getattr(
+                f,
+                "state",
+                None,
+            ),
             "name",
             "",
         )
+
         if state == "ACTIVE":
-            uploaded = file_obj
+
+            uploaded = f
             break
+
         if state == "FAILED":
-            raise RuntimeError("Gemini gagal memproses video.")
-        await asyncio.sleep(2)
+
+            raise RuntimeError(
+                "Gemini gagal "
+                "memproses video."
+            )
+
+        time.sleep(2)
+
     else:
-        raise RuntimeError("Video terlalu lama diproses Gemini.")
 
-    response, _ = await _gemini_call_with_fallback([
-        uploaded,
-        SYSTEM_PROMPT + "\n\n" + prompt,
-    ])
-    answer = clean_text(getattr(response, "text", ""), 16000)
-    if not answer:
-        raise RuntimeError("Gemini tidak mengembalikan analisis video.")
-    return answer
-
-
-async def gemini_generate_image(prompt: str) -> bytes:
-    if not gemini:
-        raise RuntimeError("Gemini tidak tersedia.")
-
-    response = await asyncio.to_thread(
-        gemini.models.generate_content,
-        model=GEMINI_IMAGE_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_modalities=["TEXT", "IMAGE"]
-        ),
-    )
-    data = extract_inline_image(response)
-    if not data:
         raise RuntimeError(
-            "Gemini image tidak mengembalikan data gambar."
+            "Video belum siap diproses."
         )
-    return data
+
+    result = (
+        gemini
+        .models
+        .generate_content(
+            model=GEMINI_CHAT_MODEL,
+            contents=[
+                uploaded,
+                (
+                    SYSTEM
+                    + "\n\n"
+                    + prompt
+                ),
+            ],
+        )
+    )
+
+    return (
+        result.text
+        or ""
+    )
 
 
-async def pollinations_image(prompt: str) -> bytes:
-    if not POLLINATIONS_ENABLED or not POLLINATIONS_KEY:
-        raise RuntimeError("Pollinations image tidak aktif.")
+# ============================================================
+# IMAGE GENERATION
+# FREE ONLY
+# ============================================================
+
+def pollinations_image(
+    prompt
+):
+
+    if not POLLINATIONS_ENABLED:
+
+        raise RuntimeError(
+            "Pollinations tidak diaktifkan."
+        )
+
+    if not POLLINATIONS_KEY:
+
+        raise RuntimeError(
+            "POLLINATIONS_API_KEY "
+            "belum tersedia."
+        )
 
     from urllib.parse import quote
 
     url = (
-        "https://gen.pollinations.ai/image/"
-        + quote(prompt, safe="")
-        + f"?model={quote(POLLINATIONS_IMAGE_MODEL, safe='')}"
+        f"{POLLINATIONS_BASE_URL}/image/"
+        f"{quote(prompt, safe='')}"
+        f"?model="
+        f"{quote(POLLINATIONS_IMAGE_MODEL)}"
+        f"&width=1024"
+        f"&height=1024"
     )
-    async with httpx.AsyncClient(timeout=180) as client:
-        response = await client.get(
+
+    with httpx.Client(
+        timeout=300
+    ) as client:
+
+        r = client.get(
             url,
-            headers={"Authorization": f"Bearer {POLLINATIONS_KEY}"},
+            headers={
+                "Authorization":
+                    (
+                        "Bearer "
+                        f"{POLLINATIONS_KEY}"
+                    ),
+                "Accept":
+                    "image/png,image/jpeg,*/*",
+            },
         )
-    response.raise_for_status()
-    if not response.content:
-        raise RuntimeError("Pollinations tidak mengembalikan gambar.")
-    return response.content
+
+        if r.status_code >= 400:
+
+            raise RuntimeError(
+                f"Pollinations HTTP "
+                f"{r.status_code}: "
+                f"{r.text[:400]}"
+            )
+
+        if not r.content:
+
+            raise RuntimeError(
+                "Pollinations "
+                "mengembalikan data kosong."
+            )
+
+        return r.content
 
 
-async def generate_image(prompt: str) -> tuple[bytes, str]:
-    candidates = []
+def generate_image(
+    prompt
+):
 
-    if POLLINATIONS_ENABLED and POLLINATIONS_KEY:
-        candidates.append(("Pollinations", lambda: pollinations_image(prompt)))
+    if POLLINATIONS_ENABLED:
 
-    if gemini:
-        candidates.append(("Gemini Image", lambda: gemini_generate_image(prompt)))
-
-    errors = []
-    for name, fn in candidates:
-        try:
-            return await fn(), name
-        except Exception as exc:
-            log.exception("%s image failed", name)
-            errors.append(f"{name}: {str(exc)[:180]}")
+        return (
+            pollinations_image(
+                prompt
+            ),
+            "Pollinations",
+        )
 
     raise RuntimeError(
-        "Semua provider gambar gagal. " + " | ".join(errors)
+        "Generate gambar GRATIS "
+        "belum tersedia. "
+        "Aktifkan "
+        "POLLINATIONS_ENABLED=true "
+        "dan "
+        "POLLINATIONS_API_KEY."
     )
 
 
-async def pollinations_video(prompt: str) -> bytes:
-    if not POLLINATIONS_ENABLED or not POLLINATIONS_KEY:
-        raise RuntimeError("Pollinations video tidak aktif.")
+# ============================================================
+# COMMAND ARGUMENT
+# ============================================================
 
-    from urllib.parse import quote
+def command_arg(
+    text
+):
 
-    url = (
-        "https://gen.pollinations.ai/video/"
-        + quote(prompt, safe="")
-        + f"?model={quote(POLLINATIONS_VIDEO_MODEL, safe='')}"
+    parts = text.split(
+        maxsplit=1
     )
-    async with httpx.AsyncClient(timeout=300) as client:
-        response = await client.get(
-            url,
-            headers={"Authorization": f"Bearer {POLLINATIONS_KEY}"},
-        )
-    response.raise_for_status()
-    if not response.content:
-        raise RuntimeError("Pollinations tidak mengembalikan video.")
-    return response.content
 
-
-async def generate_video(prompt: str) -> tuple[bytes, str]:
-    # Per prioritas proyek: Pollinations only when enabled/available.
-    if POLLINATIONS_ENABLED and POLLINATIONS_KEY:
-        return await pollinations_video(prompt), "Pollinations"
-
-    raise RuntimeError(
-        "Generate video tidak aktif. Aktifkan Pollinations dengan "
-        "POLLINATIONS_ENABLED=true dan POLLINATIONS_API_KEY."
+    return (
+        parts[1].strip()
+        if len(parts) > 1
+        else ""
     )
 
 
-# ---------------------------------------------------------------------------
-# COMMANDS / UPDATE HANDLER
-# ---------------------------------------------------------------------------
+# ============================================================
+# HANDLE TELEGRAM UPDATE
+# ============================================================
 
-def command_arg(text: str) -> str:
-    parts = text.split(maxsplit=1)
-    return parts[1].strip() if len(parts) == 2 else ""
+async def handle(
+    update
+):
 
+    message = update.get(
+        "message"
+    )
 
-def is_command(text: str, command: str) -> bool:
-    return text == command or text.startswith(command + " ")
-
-
-async def handle_update(update: dict[str, Any]) -> None:
-    message = update.get("message")
     if not message:
         return
 
-    chat_id = message.get("chat", {}).get("id")
-    if chat_id is None:
-        return
+    chat_id = (
+        message
+        .get("chat", {})
+        .get("id")
+    )
 
-    uid = str(message.get("from", {}).get("id", chat_id))
-    text = clean_text(message.get("text", ""), 10000)
-    caption = clean_text(message.get("caption", ""), 5000)
+    uid = str(
+        message
+        .get("from", {})
+        .get(
+            "id",
+            chat_id,
+        )
+    )
 
-    # /start
-    if is_command(text, "/start"):
+    text = (
+        message.get(
+            "text",
+            ""
+        )
+        or ""
+    )
+
+    caption = (
+        message.get(
+            "caption",
+            ""
+        )
+        or ""
+    )
+
+    # ========================================================
+    # /START
+    # ========================================================
+
+    if text.startswith(
+        "/start"
+    ):
+
         await send_text(
             chat_id,
-            "🤖 Designmanufaktur Super AI Agent aktif.\n\n"
-            "Routing otomatis:\n"
-            "• Coding → Groq Coding\n"
-            "• Reasoning → Groq Reasoning\n"
-            "• Teknik/manufaktur → Gemini\n"
-            "• Chat normal → Gemini\n"
-            "• Foto/video → Gemini multimodal\n"
-            "• Gambar → Pollinations jika aktif, lalu Gemini\n"
-            "• Video → Pollinations jika aktif\n\n"
-            "Perintah:\n"
-            "/model\n"
-            "/memory\n"
-            "/knowledge\n"
-            "/remember <teks>\n"
-            "/forget <teks>\n"
-            "/reset\n"
-            "/gambar <prompt>\n"
-            "/video <prompt>",
+            """🤖 Designmanufaktur Super AI Agent aktif.
+
+🧠 Smart Multi-AI Router
+💰 FREE-FIRST
+🖼️ Gemini Vision
+🎥 Gemini Video Analysis
+🎨 Free Image Generation
+
+Chat biasa → AI dipilih sesuai jenis tugas.
+
+Teknik/Manufaktur:
+OpenRouter Free → Gemini → Groq
+
+Coding:
+OpenRouter Free → Groq → Gemini
+
+Reasoning/Math:
+OpenRouter Free → Groq → Gemini
+
+General/Creative:
+OpenRouter Free → Gemini → Groq
+
+Jika provider gagal → otomatis fallback.
+
+/model → status AI
+/reset → hapus memory sesi
+/gambar <prompt> → generate gambar gratis
+/video → analisis video""",
         )
+
         return
 
-    # /model
-    if is_command(text, "/model"):
+    # ========================================================
+    # /RESET
+    # ========================================================
+
+    if text.startswith(
+        "/reset"
+    ):
+
+        memory.pop(
+            uid,
+            None,
+        )
+
         await send_text(
             chat_id,
-            "🤖 STATUS PROVIDER\n\n"
-            f"Gemini: {'✅' if gemini else '❌'} (dipilih: {GEMINI_MODEL}, aktif: {GEMINI_ACTIVE_MODEL})\n"
-            f"Groq: {'✅' if groq else '❌'}\n"
-            f"  Reasoning: {GROQ_REASONING_MODEL}\n"
-            f"  Coding: {GROQ_CODING_MODEL}\n"
-            f"  Fast: {GROQ_FAST_MODEL}\n"
-            f"GitHub Memory: {'✅' if GITHUB_TOKEN else '❌'}\n"
-            f"Pollinations: "
-            f"{'✅' if POLLINATIONS_ENABLED and POLLINATIONS_KEY else '❌'}\n"
-            f"  Image: {POLLINATIONS_IMAGE_MODEL}\n"
-            f"  Video: {POLLINATIONS_VIDEO_MODEL}",
+            "✅ Memory sesi dihapus.",
         )
+
         return
 
-    # /remember
-    if is_command(text, "/remember"):
-        fact = command_arg(text)
-        if not fact:
+    # ========================================================
+    # /MODEL
+    # ========================================================
+
+    if text.startswith(
+        "/model"
+    ):
+
+        await send_text(
+            chat_id,
+            f"""STATUS SUPER AI AGENT
+
+Gemini:
+{'✅ AKTIF' if gemini else '❌ TIDAK AKTIF'}
+
+OpenRouter FREE:
+{'✅ AKTIF' if openrouter else '❌ TIDAK AKTIF'}
+
+Groq FREE-TIER:
+{'✅ AKTIF' if groq else '❌ TIDAK AKTIF'}
+
+Gemini Chat:
+{GEMINI_CHAT_MODEL}
+
+OpenRouter:
+{OPENROUTER_FREE_MODEL}
+
+Groq Coding:
+{GROQ_CODING_MODEL}
+
+Groq Reasoning:
+{GROQ_REASONING_MODEL}
+
+Groq Fast:
+{GROQ_FAST_MODEL}
+
+Gemini Vision:
+{GEMINI_CHAT_MODEL}
+
+Image Generation FREE:
+{'Pollinations ✅' if POLLINATIONS_ENABLED and POLLINATIONS_KEY else 'Tidak aktif'}
+
+ROUTING:
+
+Technical/Manufacturing
+→ OpenRouter Free
+→ Gemini
+→ Groq
+
+Coding/Reasoning/Math
+→ OpenRouter Free
+→ Groq
+→ Gemini
+
+General/Creative
+→ OpenRouter Free
+→ Gemini
+→ Groq
+
+Vision
+→ Gemini
+→ OpenRouter Free
+
+PAID MODEL ROUTING:
+DISABLED""",
+        )
+
+        return
+
+    # ========================================================
+    # /GAMBAR
+    # ========================================================
+
+    if text.startswith(
+        "/gambar"
+    ):
+
+        prompt = command_arg(
+            text
+        )
+
+        if not prompt:
+
             await send_text(
                 chat_id,
-                "Gunakan: /remember <informasi yang ingin disimpan>",
+                "Contoh:\n"
+                "/gambar pagar "
+                "minimalis hitam modern",
             )
+
             return
-        try:
-            await remember_fact(uid, fact)
-            await send_text(chat_id, "✅ Informasi disimpan ke memory GitHub.")
-        except Exception as exc:
-            log.exception("remember failed")
-            await send_text(
-                chat_id,
-                f"❌ Gagal menyimpan memory: {str(exc)[:400]}",
-            )
-        return
 
-    # /memory
-    if is_command(text, "/memory"):
-        try:
-            mem = await load_memory(uid)
-            facts = mem.get("facts", [])
-            history = mem.get("history", [])[-10:]
+        await send_text(
+            chat_id,
+            "🎨 Memilih generator "
+            "gambar GRATIS...",
+        )
 
-            out = ["🧠 PERSISTENT MEMORY\n"]
-            out.append(
-                "FAKTA:\n"
-                + (
-                    "\n".join(f"• {x}" for x in facts)
-                    if facts else "• Belum ada."
+        try:
+
+            data, provider = (
+                await asyncio.to_thread(
+                    generate_image,
+                    prompt,
                 )
             )
-            out.append(
-                "\nRIWAYAT TERAKHIR:\n"
-                + (
-                    "\n".join(
-                        f"• {m.get('role')}: "
-                        f"{clean_text(m.get('content'), 500)}"
-                        for m in history
-                    )
-                    if history else "• Belum ada."
-                )
+
+            await send_photo(
+                chat_id,
+                data,
             )
-            await send_text(chat_id, "\n".join(out))
-        except Exception as exc:
-            log.exception("memory read failed")
+
             await send_text(
                 chat_id,
-                f"❌ Gagal membaca memory: {str(exc)[:400]}",
+                f"✅ Gambar dibuat "
+                f"oleh {provider}.",
             )
+
+        except Exception as e:
+
+            log.exception(
+                "image generation failed"
+            )
+
+            await send_text(
+                chat_id,
+                "❌ Generate gambar "
+                "gratis gagal.\n"
+                + str(e)[:700],
+            )
+
         return
 
-    # /forget
-    if is_command(text, "/forget"):
-        query = command_arg(text)
-        if not query:
-            await send_text(
-                chat_id,
-                "Gunakan: /forget <teks yang ingin dihapus>",
-            )
-            return
-        try:
-            removed = await forget_fact(uid, query)
-            await send_text(
-                chat_id,
-                f"✅ Memory dihapus: {removed} item.",
-            )
-        except Exception as exc:
-            log.exception("forget failed")
-            await send_text(
-                chat_id,
-                f"❌ Gagal menghapus memory: {str(exc)[:400]}",
-            )
-        return
+    # ========================================================
+    # VIDEO
+    # ========================================================
 
-    # /knowledge
-    if is_command(text, "/knowledge"):
-        try:
-            items = await github_list_dir(user_knowledge_dir(uid))
-            count = sum(
-                1 for x in items if x.get("type") == "file"
-            )
-            await send_text(
-                chat_id,
-                f"📚 Knowledge base: {count} chunk tersimpan di GitHub.\n\n"
-                "Kirim file TXT, MD, CSV, JSON, PY, JS, TS, HTML, CSS, "
-                "XML, YAML, YML, PDF, atau DOCX untuk dipelajari.",
-            )
-        except Exception as exc:
-            log.exception("knowledge status failed")
-            await send_text(
-                chat_id,
-                f"❌ Gagal membaca knowledge base: {str(exc)[:400]}",
-            )
-        return
-
-    # /reset
-    if is_command(text, "/reset"):
-        try:
-            await reset_user(uid)
-            await send_text(
-                chat_id,
-                "🧹 Reset selesai.\n"
-                "Memory, history, knowledge base, dan few-shot examples "
-                "milik pengguna ini dihapus dari GitHub.",
-            )
-        except Exception as exc:
-            log.exception("reset failed")
-            await send_text(
-                chat_id,
-                f"❌ Reset gagal: {str(exc)[:400]}",
-            )
-        return
-
-    # /gambar
-    if is_command(text, "/gambar"):
-        prompt = command_arg(text)
-        if not prompt:
-            await send_text(
-                chat_id,
-                "Contoh: /gambar desain pagar minimalis hitam modern",
-            )
-            return
-        await send_text(chat_id, "🎨 Router gambar sedang bekerja...")
-        try:
-            data, provider = await generate_image(prompt)
-            await send_photo(chat_id, data)
-            await send_text(
-                chat_id,
-                f"✅ Gambar selesai. Provider: {provider}",
-            )
-        except Exception as exc:
-            log.exception("image generation failed")
-            await send_text(
-                chat_id,
-                f"❌ Generate gambar gagal: {str(exc)[:500]}",
-            )
-        return
-
-    # /video
-    if is_command(text, "/video"):
-        prompt = command_arg(text)
-        if not prompt:
-            await send_text(
-                chat_id,
-                "Contoh: /video iklan pagar minimalis 10 detik",
-            )
-            return
-        await send_text(chat_id, "🎬 Router video sedang bekerja...")
-        try:
-            data, provider = await generate_video(prompt)
-            await send_video(chat_id, data)
-            await send_text(
-                chat_id,
-                f"✅ Video selesai. Provider: {provider}",
-            )
-        except Exception as exc:
-            log.exception("video generation failed")
-            await send_text(
-                chat_id,
-                f"❌ Generate video gagal: {str(exc)[:500]}",
-            )
-        return
-
-    # Telegram document / knowledge
-    document = message.get("document")
-    if document:
-        filename = safe_name(document.get("file_name", "document"))
-        ext = PurePosixPath(filename.lower()).suffix
-        supported = {
-            ".txt", ".md", ".csv", ".json", ".py", ".js", ".ts",
-            ".html", ".css", ".xml", ".yaml", ".yml", ".pdf", ".docx",
-        }
-
-        if ext not in supported:
-            await send_text(
-                chat_id,
-                "❌ Format file tidak didukung.",
-            )
-            return
+    if message.get(
+        "video"
+    ):
 
         await send_text(
             chat_id,
-            f"📚 Mempelajari {filename}...",
+            "🎥 Sedang menganalisis "
+            "video...",
         )
+
         try:
-            data, _ = await tg_file(document["file_id"])
-            chunks = await ingest_knowledge(uid, filename, data)
+
+            data, path = (
+                await tg_file(
+                    message[
+                        "video"
+                    ][
+                        "file_id"
+                    ]
+                )
+            )
+
+            if len(data) > (
+                20 * 1024 * 1024
+            ):
+
+                await send_text(
+                    chat_id,
+                    "❌ Video lebih "
+                    "dari 20 MB.",
+                )
+
+                return
+
+            mime = (
+                "video/quicktime"
+                if path.lower().endswith(
+                    ".mov"
+                )
+                else "video/mp4"
+            )
+
+            answer = (
+                await asyncio.to_thread(
+                    analyze_video,
+                    data,
+                    mime,
+                    caption
+                    or
+                    (
+                        "Analisa video ini "
+                        "secara detail. "
+                        "Jelaskan objek, "
+                        "proses, kondisi, "
+                        "masalah yang terlihat, "
+                        "dan saran praktis."
+                    ),
+                )
+            )
+
             await send_text(
                 chat_id,
-                f"✅ Selesai. {filename} disimpan sebagai {chunks} "
-                "chunk di knowledge base GitHub.",
+                answer,
             )
-        except Exception as exc:
-            log.exception("knowledge ingestion failed")
+
+        except Exception as e:
+
+            log.exception(
+                "video analysis failed"
+            )
+
             await send_text(
                 chat_id,
-                f"❌ Gagal mempelajari file: {str(exc)[:500]}",
+                "❌ Analisis video "
+                "gagal.\n"
+                + str(e)[:700],
             )
+
         return
 
-    # Photo analysis
-    photo = message.get("photo")
-    if photo:
-        await send_text(chat_id, "🖼️ Sedang menganalisis foto...")
+    # ========================================================
+    # PHOTO
+    # ========================================================
+
+    if message.get(
+        "photo"
+    ):
+
+        await send_text(
+            chat_id,
+            "🖼️ Gemini Vision "
+            "sedang menganalisis "
+            "gambar...",
+        )
+
         try:
-            data, path = await tg_file(photo[-1]["file_id"])
-            mime = mimetypes.guess_type(path)[0] or "image/jpeg"
-            answer = await analyze_image(
-                data,
-                mime,
-                caption or (
-                    "Analisis foto ini secara detail. "
-                    "Jika terkait manufaktur/fabrikasi, jelaskan kondisi, "
-                    "kemungkinan masalah, ukuran/komponen yang dapat "
-                    "diidentifikasi secara visual, dan saran praktis. "
-                    "Jangan mengarang data yang tidak terlihat."
-                ),
+
+            data, path = (
+                await tg_file(
+                    message[
+                        "photo"
+                    ][-1][
+                        "file_id"
+                    ]
+                )
             )
-            await send_text(chat_id, answer)
-        except Exception as exc:
-            log.exception("photo analysis failed")
+
+            mime = (
+                mimetypes.guess_type(
+                    path
+                )[0]
+                or "image/jpeg"
+            )
+
+            prompt = (
+                caption
+                or
+                """
+Analisa gambar ini secara detail.
+
+Jika terkait manufaktur, bengkel las,
+tenda, pagar, fabrikasi, konstruksi,
+atau produk custom:
+
+- jelaskan objek
+- jelaskan komponen
+- jelaskan fungsi
+- jelaskan kondisi
+- perkirakan hanya data yang benar-benar
+  dapat diperkirakan dari visual
+- jelaskan masalah yang terlihat
+- berikan saran praktis
+
+Jangan mengarang ukuran atau data
+yang tidak terlihat pada gambar.
+"""
+            )
+
+            answer, model = (
+                await asyncio.to_thread(
+                    analyze_image,
+                    data,
+                    mime,
+                    prompt,
+                )
+            )
+
             await send_text(
                 chat_id,
-                f"❌ Analisis foto gagal: {str(exc)[:500]}",
+                answer,
             )
-        return
 
-    # Video analysis
-    video = message.get("video")
-    if video:
-        await send_text(chat_id, "🎥 Sedang menganalisis video...")
-        try:
-            data, path = await tg_file(video["file_id"])
-            mime = mimetypes.guess_type(path)[0] or "video/mp4"
-            answer = await analyze_video(
-                data,
-                mime,
-                caption or (
-                    "Analisis video ini secara detail. Jelaskan apa yang "
-                    "terlihat, proses yang sedang dilakukan, masalah yang "
-                    "terlihat, risiko, dan saran perbaikan praktis."
-                ),
+            log.info(
+                "VISION SUCCESS | "
+                "model=%s",
+                model,
             )
-            await send_text(chat_id, answer)
-        except Exception as exc:
-            log.exception("video analysis failed")
+
+        except Exception as e:
+
+            log.exception(
+                "image analysis failed"
+            )
+
             await send_text(
                 chat_id,
-                f"❌ Analisis video gagal: {str(exc)[:500]}",
+                "❌ Analisis gambar "
+                "gagal.\n"
+                + str(e)[:700],
             )
+
         return
 
-    # Normal chat
+    # ========================================================
+    # NORMAL CHAT
+    # ========================================================
+
     if not text:
         return
 
     try:
+
         await tg(
             "sendChatAction",
-            {"chat_id": chat_id, "action": "typing"},
+            {
+                "chat_id": chat_id,
+                "action": "typing",
+            },
         )
 
-        answer, provider, category = await route_chat(uid, text)
-
-        # Persistent conversation history.
-        await add_history(uid, "user", text)
-        await add_history(uid, "assistant", answer)
-
-        # Save strong user/assistant exchanges as few-shot examples only for
-        # normal successful interactions; retrieval decides whether to use it.
-        if len(text) >= 12 and len(answer) >= 40:
-            try:
-                await save_example(uid, text, answer, category)
-            except Exception:
-                log.exception("few-shot save failed")
-
-        await send_text(chat_id, answer)
-        log.info(
-            "Chat selesai user=%s category=%s provider=%s",
-            uid,
-            category,
+        (
+            answer,
             provider,
+            model,
+            task,
+        ) = await asyncio.to_thread(
+            chat_router,
+            uid,
+            text,
         )
-    except Exception as exc:
-        log.exception("chat failed")
+
+        remember(
+            uid,
+            "user",
+            text,
+        )
+
+        remember(
+            uid,
+            "assistant",
+            answer,
+        )
+
         await send_text(
             chat_id,
-            "❌ Semua provider AI untuk permintaan ini gagal.\n"
-            f"Detail: {str(exc)[:500]}",
+            answer,
+        )
+
+        log.info(
+            "CHAT DONE | "
+            "task=%s | "
+            "provider=%s | "
+            "model=%s",
+            task,
+            provider,
+            model,
+        )
+
+    except Exception as e:
+
+        log.exception(
+            "chat failed"
+        )
+
+        await send_text(
+            chat_id,
+            "❌ Semua AI GRATIS "
+            "gagal untuk request ini.\n\n"
+            + str(e)[:700],
         )
 
 
-# ---------------------------------------------------------------------------
-# HTTP ENDPOINTS
-#
-# IMPORTANT FOR VERCEL:
-# - api/index.py is the Python function.
-# - The route may be exposed as /api or rewritten from /api/webhook.
-# - Both /webhook and /api/webhook are defined so the application itself
-#   accepts either path when the platform forwards it.
-# ---------------------------------------------------------------------------
+# ============================================================
+# ROOT
+# ============================================================
+
+@app.get("/")
+async def root():
+
+    return {
+        "ok": True,
+        "service":
+            "Designmanufaktur "
+            "Super AI Agent",
+
+        "free_only": True,
+
+        "providers": {
+            "gemini":
+                bool(gemini),
+
+            "openrouter_free":
+                bool(openrouter),
+
+            "groq_free_tier":
+                bool(groq),
+        },
+
+        "models": {
+            "gemini":
+                GEMINI_CHAT_MODEL,
+
+            "openrouter":
+                OPENROUTER_FREE_MODEL,
+
+            "groq_coding":
+                GROQ_CODING_MODEL,
+
+            "groq_reasoning":
+                GROQ_REASONING_MODEL,
+
+            "groq_fast":
+                GROQ_FAST_MODEL,
+        },
+    }
+
+
+# ============================================================
+# /API
+# ============================================================
+
+@app.get("/api")
+async def api_root():
+
+    return await root()
+
+
+# ============================================================
+# WEBHOOK IMPLEMENTATION
+# ============================================================
 
 async def webhook_impl(
     request: Request,
-    secret: Optional[str],
-) -> dict[str, bool]:
-    if WEBHOOK_SECRET and secret != WEBHOOK_SECRET:
+    x_telegram_bot_api_secret_token:
+        Optional[str],
+):
+
+    if (
+        WEBHOOK_SECRET
+        and
+        x_telegram_bot_api_secret_token
+        != WEBHOOK_SECRET
+    ):
+
         raise HTTPException(
             status_code=403,
             detail="Invalid webhook secret",
         )
 
-    try:
-        update = await request.json()
-    except Exception:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid JSON",
-        )
-
-    # Telegram retries failed webhooks. We return quickly after processing.
-    # The actual AI call is awaited so Telegram sees the result only after
-    # the handler finishes.
-    await handle_update(update)
-    return {"ok": True}
-
-
-@app.post("/")
-async def webhook_root(
-    request: Request,
-    x_telegram_bot_api_secret_token: Optional[str] = Header(default=None),
-):
-    return await webhook_impl(
-        request,
-        x_telegram_bot_api_secret_token,
+    update = (
+        await request.json()
     )
 
+    await handle(
+        update
+    )
 
-@app.get("/")
-async def root() -> dict[str, Any]:
     return {
-        "ok": True,
-        "service": "Designmanufaktur Super AI Agent",
-        "telegram": bool(TELEGRAM_TOKEN),
-        "github_memory": bool(GITHUB_TOKEN),
-        "gemini": bool(gemini),
-        "groq": bool(groq),
-        "pollinations": bool(POLLINATIONS_ENABLED and POLLINATIONS_KEY),
+        "ok": True
     }
 
 
-@app.post("/webhook")
+# ============================================================
+# TELEGRAM WEBHOOK
+# ============================================================
+
+@app.post(
+    "/api/webhook"
+)
 async def webhook(
     request: Request,
-    x_telegram_bot_api_secret_token: Optional[str] = Header(default=None),
+    x_telegram_bot_api_secret_token:
+        Optional[str] = Header(
+            default=None
+        ),
 ):
+
     return await webhook_impl(
         request,
         x_telegram_bot_api_secret_token,
     )
 
 
-@app.post("/api/webhook")
-async def webhook_legacy(
+# ============================================================
+# LEGACY ROOT WEBHOOK
+# ============================================================
+
+@app.post("/")
+async def root_post(
     request: Request,
-    x_telegram_bot_api_secret_token: Optional[str] = Header(default=None),
+    x_telegram_bot_api_secret_token:
+        Optional[str] = Header(
+            default=None
+        ),
 ):
+
     return await webhook_impl(
         request,
         x_telegram_bot_api_secret_token,
