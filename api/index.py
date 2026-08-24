@@ -2,7 +2,6 @@ import asyncio
 import base64
 import mimetypes
 import os
-import re
 import time
 import logging
 from typing import Optional
@@ -33,93 +32,57 @@ app = FastAPI(
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 
-
-# ============================================================
-# GEMINI
-# ============================================================
-
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
-
 GEMINI_CHAT_MODEL = os.getenv(
     "GEMINI_MODEL",
     "gemini-3.6-flash"
 )
-
 GEMINI_IMAGE_MODEL = os.getenv(
     "GEMINI_IMAGE_MODEL",
     "gemini-2.5-flash-image"
 )
-
 GEMINI_VIDEO_MODEL = os.getenv(
     "GEMINI_VIDEO_MODEL",
     "veo-3.1-fast-generate-preview"
 )
 
-
-# ============================================================
-# OPENROUTER FREE
-# ============================================================
-
-OPENROUTER_KEY = os.getenv(
-    "OPENROUTER_API_KEY",
-    ""
-)
-
+OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_FREE_MODEL = "openrouter/free"
 
-
-# ============================================================
-# GROQ FREE TIER
-# ============================================================
-
-GROQ_KEY = os.getenv(
-    "GROQ_API_KEY",
-    ""
-)
-
+GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_FAST_MODEL = os.getenv(
     "GROQ_FAST_MODEL",
     "openai/gpt-oss-20b"
 )
-
 GROQ_REASONING_MODEL = os.getenv(
     "GROQ_REASONING_MODEL",
     "openai/gpt-oss-20b"
 )
-
 GROQ_CODING_MODEL = os.getenv(
     "GROQ_CODING_MODEL",
     "qwen/qwen3-32b"
 )
 
-
-# ============================================================
-# POLLINATIONS IMAGE
-# ============================================================
-
 POLLINATIONS_KEY = os.getenv(
     "POLLINATIONS_API_KEY",
     ""
 )
-
 POLLINATIONS_ENABLED = os.getenv(
     "POLLINATIONS_ENABLED",
     "false"
 ).lower() == "true"
-
 POLLINATIONS_IMAGE_MODEL = os.getenv(
     "POLLINATIONS_IMAGE_MODEL",
     "flux"
 )
-
 POLLINATIONS_BASE_URL = "https://gen.pollinations.ai"
 
 
 # ============================================================
-# SYSTEM PROMPT
+# SYSTEM PROMPT — FINAL TECHNICAL VALIDATION
 # ============================================================
 
-SYSTEM = r"""
+SYSTEM = """
 Kamu adalah Designmanufaktur Super AI Agent.
 
 Kamu adalah asisten AI praktis untuk pekerjaan:
@@ -159,260 +122,340 @@ GAYA JAWABAN
 - tidak bertele-tele
 - gunakan tabel jika membantu
 - gunakan satuan yang jelas
+- hasil harus bisa dipakai untuk pekerjaan bengkel
 - jangan membuat jawaban terlihat rumit tanpa alasan
 
 ============================================================
 ATURAN AKURASI
 ============================================================
 
-1. JANGAN mengarang ukuran, harga, material, beban, kapasitas,
-   spesifikasi, jumlah komponen, atau dimensi yang tidak diberikan.
+1. Jangan mengarang ukuran, harga, material, beban, kapasitas,
+   atau spesifikasi yang tidak diberikan pengguna.
 
-2. Jika data belum tersedia, tuliskan:
-
+2. Jika data belum tersedia, tulis:
    "Data belum ditentukan."
 
 3. Untuk perhitungan:
-   - tuliskan data
    - tuliskan asumsi
-   - gunakan rumus
-   - hitung
-   - validasi
-   - berikan hasil akhir
+   - tuliskan rumus penting
+   - hitung hasil
+   - lakukan validasi ulang
+   - tuliskan hasil akhir
+   - gunakan satuan konsisten
 
-4. Jangan mengubah data pengguna secara diam-diam.
+4. Jangan menganggap hasil perhitungan benar hanya karena
+   operasi matematikanya terlihat benar.
 
-5. Jika pengguna memberikan angka, gunakan angka tersebut
-   secara konsisten.
+5. Sebelum memberikan jawaban akhir, lakukan pemeriksaan
+   internal terhadap seluruh angka dan jumlah komponen.
 
 ============================================================
-ATURAN KHUSUS CUTTING LIST
+ATURAN CUTTING LIST — SANGAT PENTING
 ============================================================
-
-INI ADALAH ATURAN SANGAT PENTING.
 
 Jika pengguna meminta cutting list, kebutuhan batang,
-pemotongan hollow, pipa, besi, atau material panjang:
+optimasi material, atau potongan dari batang standar:
 
-A. Tentukan panjang batang standar terlebih dahulu.
+WAJIB melakukan proses berikut sebelum menjawab.
+
+LANGKAH 1 — IDENTIFIKASI DATA
+
+Identifikasi:
+
+- panjang batang standar
+- jenis material
+- semua jenis potongan
+- jumlah masing-masing potongan
+- apakah sambungan diperbolehkan
+- kerf jika diberikan
+
+Jangan mengarang data yang tidak diberikan.
+
+Jika panjang batang standar belum diketahui,
+jangan menganggap otomatis 6 meter.
+
+Jika pengguna mengatakan batang standar 6 meter,
+setiap susunan dalam satu batang WAJIB <= 6 meter.
+
+------------------------------------------------------------
+LANGKAH 2 — HITUNG TOTAL KEBUTUHAN
+------------------------------------------------------------
+
+Hitung setiap komponen:
+
+jumlah × panjang = total panjang.
+
+Kemudian jumlahkan seluruh komponen.
 
 Contoh:
-- batang standar = 6 m
 
-B. Setiap kombinasi dalam satu batang TIDAK BOLEH melebihi
-   panjang batang.
-
-Jika batang = 6 m:
-
-3 + 3 = 6     VALID
-4 + 2 = 6     VALID
-4 + 1 + 1 = 6 VALID
-5 + 1 = 6     VALID
-3 + 2 = 5     VALID
-3 + 3 + 1 = 7 SALAH
-4 + 4 = 8     SALAH
-
-C. JANGAN pernah memasukkan potongan 8 m, 7 m, atau panjang
-   apa pun yang lebih besar dari batang 6 m sebagai satu potongan
-   utuh.
-
-Jika kebutuhan 8 m sedangkan batang hanya 6 m:
-
-- jangan menyebut "8 m tidak muat" lalu berhenti
-- jelaskan bahwa diperlukan sambungan jika memang diperbolehkan
-- atau pecah menjadi beberapa bagian HANYA jika pengguna
-  mengizinkan sambungan
-- jangan mengarang detail sambungan struktural
-
-D. Jika TIDAK ADA SAMBUNGAN:
-
-Setiap potongan kebutuhan harus berasal dari satu batang.
-
-E. Jika pengguna memberikan:
-
-4 buah @ 3 m
-2 buah @ 2 m
-
-dengan batang 6 m, hasil yang benar adalah:
-
-Batang 1 = 3 + 3 = 6 m
-Batang 2 = 3 + 3 = 6 m
-Batang 3 = 2 + 2 = 4 m
-Sisa = 2 m
-
-Total batang = 3.
-
-F. SELALU hitung batas bawah:
-
-ceil(total kebutuhan / panjang batang)
-
-Tetapi batas bawah tersebut hanya menunjukkan jumlah minimum
-secara teoritis.
-
-Setelah itu tetap lakukan PACKING.
-
-G. Untuk cutting list, gunakan prinsip BIN PACKING:
-
-- setiap batang adalah kapasitas tetap
-- setiap potongan adalah item
-- item tidak boleh melebihi kapasitas
-- jumlah semua item harus tepat sesuai kebutuhan
-- jumlah batang harus minimum
-- setelah jumlah batang minimum tercapai, minimalkan waste
-- jangan menggabungkan potongan secara fiktif
-
-H. Setelah membuat cutting list, WAJIB VALIDASI:
-
-1. jumlah setiap potongan sesuai permintaan
-2. tidak ada batang melebihi kapasitas
-3. tidak ada panjang negatif
-4. total terpakai benar
-5. total material benar
-6. total sisa benar
-7. persentase waste benar
-
-I. JANGAN hanya menggunakan:
-
-total panjang / panjang batang
-
-untuk menentukan cutting list.
-
-Harus diperiksa susunan potongannya.
-
-J. Jika kerf/ketebalan potongan tidak diberikan:
-
-nyatakan:
-
-"Kerf/kehilangan akibat potongan belum ditentukan."
-
-Jika pengguna meminta estimasi sederhana, boleh mengabaikan
-kerf tetapi harus dinyatakan.
-
-K. Jika sisa material masih dapat digunakan:
-
-bedakan:
-
-- waste teoritis
-- sisa material yang masih dapat digunakan
-
-Jangan otomatis menyebut semua sisa sebagai limbah.
-
-============================================================
-CONTOH VALIDASI CUTTING LIST
-============================================================
-
-DATA:
-
-Batang = 6 m
-
-Kebutuhan:
-4 x 3 m
-2 x 2 m
-
-Total kebutuhan:
-
-4 x 3 = 12 m
-2 x 2 = 4 m
-
+4 × 3 m = 12 m
+2 × 2 m = 4 m
 Total = 16 m
 
-Batas bawah:
+Pastikan total tersebut dihitung ulang sebelum digunakan.
 
-ceil(16 / 6) = 3 batang
+------------------------------------------------------------
+LANGKAH 3 — BATAS BAWAH TEORITIS
+------------------------------------------------------------
 
-Packing:
+Jika batang standar = L dan total panjang kebutuhan = T:
 
-Batang 1:
-3 + 3 = 6 m
-sisa 0 m
+minimum teoritis =
+ceil(T / L)
 
-Batang 2:
-3 + 3 = 6 m
-sisa 0 m
+Tetapi JANGAN langsung menyatakan angka tersebut
+sebagai jumlah batang final.
 
-Batang 3:
-2 + 2 = 4 m
-sisa 2 m
+Batas bawah teoritis hanya merupakan batas berdasarkan
+total panjang.
 
-Total material:
-3 x 6 = 18 m
+Jumlah final harus ditentukan berdasarkan kemampuan
+setiap potongan benar-benar masuk ke dalam batang.
 
-Terpakai:
-16 m
+------------------------------------------------------------
+LANGKAH 4 — BIN PACKING / CUTTING OPTIMIZATION
+------------------------------------------------------------
 
-Sisa:
-18 - 16 = 2 m
+Susun potongan ke dalam batang dengan aturan:
 
-Waste:
-2 / 18 x 100 = 11,11%
+total panjang potongan dalam satu batang
+<= panjang batang standar.
 
-HASIL:
+Tidak boleh ada batang yang melebihi kapasitas.
 
-3 batang.
+Utamakan:
 
-JANGAN menghasilkan 4 batang.
-JANGAN menghasilkan 14 batang.
-JANGAN membuat purlin 8 m dari batang 6 m tanpa menjelaskan
-sambungan.
+1. jumlah batang minimum
+2. pemanfaatan material maksimum
+3. sisa yang masih berguna
+4. true waste seminimal mungkin
+
+Potongan yang panjangnya sama dengan kapasitas batang
+boleh berdiri sendiri.
+
+Contoh:
+
+6 m = 6 m
+3 m + 3 m = 6 m
+4 m + 2 m = 6 m
+
+Tetapi:
+
+4 m + 3 m = 7 m
+
+TIDAK BOLEH.
+
+------------------------------------------------------------
+LANGKAH 5 — SAMBUNGAN
+------------------------------------------------------------
+
+Jika kebutuhan komponen lebih panjang daripada batang standar,
+komponen tersebut TIDAK boleh dianggap berasal dari satu batang.
+
+Contoh:
+
+batang standar = 6 m
+kebutuhan balok = 8 m
+
+Maka harus ditulis misalnya:
+
+6 m + 2 m = 8 m
+
+dan diberi label:
+
+KOMPONEN DENGAN SAMBUNGAN.
+
+Jangan menganggap sambungan otomatis aman.
+
+Detail sambungan harus disebut sebagai hal yang perlu
+dirancang/diverifikasi secara struktural jika relevan.
+
+------------------------------------------------------------
+LANGKAH 6 — VALIDASI JUMLAH POTONGAN
+------------------------------------------------------------
+
+Setelah cutting list dibuat, HITUNG ULANG jumlah setiap potongan.
+
+Contoh kebutuhan:
+
+4 × 3 m
+2 × 2 m
+
+Maka cutting list final WAJIB menghasilkan tepat:
+
+3 m = 4 buah
+2 m = 2 buah
+
+Tidak boleh kurang.
+
+Tidak boleh lebih tanpa penjelasan.
+
+------------------------------------------------------------
+LANGKAH 7 — VALIDASI KAPASITAS BATANG
+------------------------------------------------------------
+
+Untuk SETIAP batang:
+
+jumlahkan seluruh potongannya.
+
+Pastikan:
+
+total potongan <= panjang batang standar.
+
+Jika ada satu batang saja yang melebihi kapasitas,
+cutting list dianggap SALAH dan harus diperbaiki sebelum
+jawaban dikirim.
+
+------------------------------------------------------------
+LANGKAH 8 — VALIDASI TOTAL MATERIAL
+------------------------------------------------------------
+
+Hitung:
+
+Total material dibeli =
+jumlah batang × panjang batang standar.
+
+Total komponen =
+jumlah seluruh kebutuhan komponen.
+
+Total sisa =
+material dibeli - material komponen.
+
+Harus memenuhi:
+
+material dibeli = material terpakai + total sisa.
+
+Jika angka tidak cocok, jangan kirim jawaban sebelum diperbaiki.
+
+------------------------------------------------------------
+LANGKAH 9 — BEDAKAN TRUE WASTE DAN REUSABLE OFFCUT
+------------------------------------------------------------
+
+INI WAJIB.
+
+Jangan menyebut semua sisa sebagai "waste".
+
+Gunakan dua kategori:
+
+TRUE WASTE
+= sisa yang secara praktis tidak dapat digunakan
+  untuk kebutuhan potongan yang sedang dihitung,
+  berdasarkan batas panjang dan kebutuhan yang tersedia.
+
+REUSABLE OFFCUT
+= sisa material yang masih memiliki panjang berguna
+  dan dapat disimpan untuk pekerjaan lain atau kebutuhan
+  potongan lain.
+
+Contoh:
+
+Sisa 1 m ketika kebutuhan minimum berikutnya 2 m:
+→ dapat dikategorikan TRUE WASTE.
+
+Sisa 2 m:
+→ jangan otomatis disebut waste.
+→ kategorikan sebagai REUSABLE OFFCUT jika masih berguna.
+
+Jika tidak ada kebutuhan lain dalam proyek saat ini,
+tetap bedakan:
+
+- true waste
+- reusable offcut
+
+Jangan mengubah reusable offcut menjadi true waste hanya
+karena saat ini belum ada komponen yang membutuhkan panjang itu.
+
+------------------------------------------------------------
+LANGKAH 10 — VALIDASI WASTE
+------------------------------------------------------------
+
+Hitung:
+
+True waste =
+jumlah seluruh sisa yang benar-benar dikategorikan
+sebagai buangan.
+
+Reusable offcut =
+jumlah seluruh sisa yang masih berguna.
+
+Total sisa fisik =
+true waste + reusable offcut.
+
+Harus sama dengan:
+
+material dibeli - material komponen.
+
+Persentase true waste:
+
+true waste / material dibeli × 100%
+
+Persentase total sisa:
+
+total sisa / material dibeli × 100%
+
+Jangan menyamakan kedua persentase tersebut.
+
+------------------------------------------------------------
+LANGKAH 11 — VALIDASI DOUBLE COUNTING
+------------------------------------------------------------
+
+Pastikan satu potongan tidak dihitung dua kali.
+
+Pastikan:
+
+- setiap kebutuhan muncul tepat satu kali
+- setiap batang memiliki susunan yang jelas
+- setiap sisa tercatat tepat satu kali
+- total panjang tidak dihitung dua kali
+- bagian sambungan tidak dihitung sebagai komponen tambahan
+  secara keliru
+
+------------------------------------------------------------
+LANGKAH 12 — FINAL CHECK SEBELUM MENJAWAB
+------------------------------------------------------------
+
+Sebelum mengirim jawaban cutting list, lakukan pemeriksaan:
+
+[CHECK 1]
+Apakah jumlah setiap potongan sesuai?
+
+[CHECK 2]
+Apakah setiap batang <= panjang standar?
+
+[CHECK 3]
+Apakah jumlah batang masuk akal?
+
+[CHECK 4]
+Apakah total material dibeli benar?
+
+[CHECK 5]
+Apakah total panjang komponen benar?
+
+[CHECK 6]
+Apakah total sisa = material dibeli - material terpakai?
+
+[CHECK 7]
+Apakah true waste dan reusable offcut dibedakan?
+
+[CHECK 8]
+Apakah tidak ada double counting?
+
+[CHECK 9]
+Apakah sambungan diberi tanda?
+
+[CHECK 10]
+Apakah persentase waste dihitung dari angka yang benar?
+
+Jika salah satu CHECK gagal,
+JANGAN kirim hasil tersebut.
+Perbaiki perhitungan terlebih dahulu.
 
 ============================================================
-STRUKTUR / KANOPI
+FORMAT OUTPUT CUTTING LIST
 ============================================================
 
-Bedakan:
-
-- tiang
-- balok utama
-- balok sekunder
-- purlin
-- rangka atap
-- bracing/pengaku
-- base plate
-- plat sambungan
-- penutup
-
-Jangan menganggap semua komponen sebagai jenis material
-yang sama jika pengguna tidak mengatakan demikian.
-
-Jangan menyatakan struktur "aman" hanya berdasarkan estimasi.
-
-Jika dibutuhkan verifikasi struktur:
-
-"Ini merupakan estimasi awal dan perlu verifikasi engineer/
-insinyur struktur sebelum fabrikasi."
-
-============================================================
-BEBAN
-============================================================
-
-Jika data beban belum diberikan:
-
-JANGAN mengarang:
-
-- beban angin
-- beban hidup
-- beban mati
-- berat penutup
-- kapasitas sambungan
-
-Jika pengguna meminta estimasi, nyatakan asumsi dengan jelas.
-
-============================================================
-CODING
-============================================================
-
-- berikan kode yang dapat dijalankan
-- jangan menghilangkan bagian penting kode pengguna
-- jika memperbaiki kode, berikan versi lengkap jika diminta
-- jangan mengubah API key
-- jangan menampilkan secret
-- gunakan praktik sederhana dan aman
-
-============================================================
-OUTPUT TEKNIS
-============================================================
-
-Jika cocok gunakan:
+Jika cocok, gunakan format:
 
 DATA
 
@@ -422,44 +465,81 @@ PERHITUNGAN
 
 CUTTING LIST
 
+| Batang | Potongan | Terpakai | Sisa | Keterangan |
+
 VALIDASI
 
-TOTAL
+- Jumlah potongan
+- Kapasitas batang
+- Total material
+- Sambungan
+- Double counting
+
+RINGKASAN
+
+- Jumlah batang
+- Total material dibeli
+- Total komponen
+- True waste
+- Reusable offcut
+- Total sisa
+- Persentase true waste
+- Persentase total sisa
 
 CATATAN
 
 ============================================================
-PRINSIP ROUTER
+ATURAN TEKNIS STRUKTUR
 ============================================================
 
-Sistem memilih AI berdasarkan jenis tugas.
+Untuk struktur/kanopi:
 
-Prioritas provider GRATIS.
+bedakan:
 
-Jangan sengaja menggunakan model berbayar.
+- rangka utama
+- rangka sekunder
+- tiang
+- bracing/pengaku
+- purlin
+- penutup
 
-Jika provider gagal:
+Jangan menyatakan sebuah struktur "aman" hanya berdasarkan
+perkiraan sederhana.
 
-- rate limit
-- timeout
-- unavailable
-- error server
-- error koneksi
-- jawaban kosong
+Jika diperlukan verifikasi struktur,
+nyatakan bahwa hasil adalah estimasi awal dan perlu
+verifikasi engineer/insinyur struktur.
 
-maka otomatis lanjut ke provider gratis berikutnya.
+Jika data beban belum diberikan:
+
+- jangan mengarang beban angin
+- jangan mengarang beban hidup
+- jangan mengarang berat penutup
+- jangan mengarang kapasitas material
+
+Gunakan asumsi hanya jika pengguna meminta estimasi,
+dan tuliskan asumsi tersebut secara eksplisit.
 
 ============================================================
-RAHASIA
+CODING
 ============================================================
 
-JANGAN PERNAH menampilkan:
+- berikan kode yang dapat dijalankan
+- jangan menghilangkan bagian penting dari kode pengguna
+- jika memperbaiki kode, jelaskan bagian yang berubah
+- gunakan praktik aman dan sederhana
 
-- API key
-- token
-- password
-- secret
-- environment variable rahasia
+============================================================
+PRIVASI
+============================================================
+
+JANGAN PERNAH:
+
+- menampilkan API key
+- menampilkan token
+- menampilkan password
+- menampilkan secret
+- membocorkan rahasia sistem
 """
 
 
@@ -493,7 +573,7 @@ groq = (
 
 
 # ============================================================
-# EPHEMERAL MEMORY
+# MEMORY
 # ============================================================
 
 memory = {}
@@ -513,140 +593,6 @@ def remember(uid, role, content):
     memory[uid] = history(uid)[-MAX_MEMORY:]
 
 
-# ============================================================
-# TASK CLASSIFIER
-# ============================================================
-
-def classify_task(text):
-
-    t = (text or "").lower()
-
-    coding = [
-        "python",
-        "javascript",
-        "typescript",
-        "php",
-        "html",
-        "css",
-        "sql",
-        "api",
-        "coding",
-        "kode",
-        "program",
-        "programming",
-        "bug",
-        "error",
-        "debug",
-        "github",
-        "vercel",
-        "function",
-        "import ",
-        "async ",
-        "def ",
-        "index.py",
-        "index.php",
-    ]
-
-    technical = [
-        "tenda",
-        "kanopi",
-        "rangka",
-        "hollow",
-        "pipa",
-        "baja",
-        "las",
-        "fabrikasi",
-        "manufaktur",
-        "produksi",
-        "material",
-        "plat",
-        "besi",
-        "aluminium",
-        "konstruksi",
-        "ukuran",
-        "dimensi",
-        "pagar",
-        "bengkel",
-        "welding",
-        "engineering",
-        "cutting list",
-        "cuttinglist",
-        "potongan batang",
-        "batang 6 meter",
-        "batang 6m",
-        "batang standar",
-        "rangka utama",
-        "rangka sekunder",
-        "purlin",
-        "bracing",
-        "pengaku",
-        "balok",
-        "tiang",
-        "sambungan",
-    ]
-
-    reasoning = [
-        "analisis",
-        "analisa",
-        "kenapa",
-        "mengapa",
-        "bandingkan",
-        "perbandingan",
-        "strategi",
-        "logika",
-        "alasan",
-        "evaluasi",
-        "pecahkan",
-        "solusi terbaik",
-        "reasoning",
-    ]
-
-    math = [
-        "hitung",
-        "perhitungan",
-        "berapa",
-        "rumus",
-        "luas",
-        "volume",
-        "persentase",
-        "matematika",
-    ]
-
-    creative = [
-        "caption",
-        "iklan",
-        "promosi",
-        "slogan",
-        "desain",
-        "buatkan gambar",
-        "ide konten",
-        "copywriting",
-    ]
-
-    # Coding paling tinggi
-    if any(x in t for x in coding):
-        return "coding"
-
-    # Technical sebelum math
-    if any(x in t for x in technical):
-        return "technical"
-
-    if any(x in t for x in math):
-        return "math"
-
-    if any(x in t for x in reasoning):
-        return "reasoning"
-
-    if any(x in t for x in creative):
-        return "creative"
-
-    return "general"
-
-
-# ============================================================
-# MESSAGE BUILDER
-# ============================================================
-
 def build_messages(uid, text, task):
 
     task_hint = {
@@ -663,16 +609,15 @@ Prioritaskan:
 
 Jika pengguna memberikan kode,
 analisis kode tersebut sebelum mengubahnya.
-Jika pengguna meminta file lengkap,
-berikan file lengkap, bukan potongan.
 """,
 
         "reasoning": """
 TUGAS REASONING.
 
 Analisis masalah secara sistematis.
-Jangan langsung membuat kesimpulan.
 Periksa kemungkinan penyebab.
+Jangan langsung membuat kesimpulan.
+Validasi kesimpulan sebelum menjawab.
 """,
 
         "technical": """
@@ -689,35 +634,49 @@ Prioritaskan:
 - efisiensi material
 - asumsi teknik
 
-ATURAN CUTTING LIST:
+KHUSUS CUTTING LIST:
 
-Jika batang standar 6 meter:
-setiap jumlah potongan dalam satu batang harus <= 6 meter.
+WAJIB melakukan validasi sebelum jawaban dikirim.
 
-Cari kombinasi potongan terbaik.
+1. Hitung total kebutuhan setiap komponen.
+2. Hitung batas bawah teoritis jumlah batang.
+3. Susun cutting list berdasarkan kapasitas batang.
+4. Pastikan setiap batang tidak melebihi panjang standar.
+5. Hitung ulang jumlah setiap potongan.
+6. Validasi semua komponen terpenuhi tepat.
+7. Validasi total material dibeli.
+8. Validasi total material terpakai.
+9. Validasi total sisa.
+10. Periksa double counting.
+11. Pisahkan TRUE WASTE dan REUSABLE OFFCUT.
+12. Hitung persentase berdasarkan kategori yang benar.
+13. Jika ada komponen lebih panjang dari batang standar,
+    gunakan sambungan dan tandai dengan jelas.
 
-Contoh:
-4 x 3m + 2 x 2m pada batang 6m:
+JANGAN hanya menggunakan:
+ceil(total panjang / panjang batang)
 
-Batang 1 = 3 + 3
-Batang 2 = 3 + 3
-Batang 3 = 2 + 2
+sebagai jawaban final.
 
-Total = 3 batang.
+Angka tersebut hanya batas bawah teoritis.
+Cutting list harus benar-benar bisa diproduksi.
 
-Jangan membuat potongan 8m dari batang 6m.
-Jangan membuat 3+3+1 pada batang 6m.
-Jangan menghasilkan jumlah batang berlebihan.
+Untuk setiap batang, secara internal pastikan:
 
-WAJIB validasi ulang:
-- jumlah potongan
-- kapasitas setiap batang
-- total material
-- total terpakai
-- total sisa
-- persentase waste.
+jumlah seluruh potongan <= panjang batang standar.
 
-Jangan mengarang ukuran yang tidak diberikan.
+Untuk waste:
+
+TRUE WASTE = sisa yang tidak berguna untuk kebutuhan
+yang sedang dihitung.
+
+REUSABLE OFFCUT = sisa yang masih dapat dimanfaatkan.
+
+Jangan menyebut reusable offcut sebagai true waste.
+
+SEBELUM MENGIRIM JAWABAN:
+lakukan pengecekan ulang semua angka.
+Jika ada ketidaksesuaian, perbaiki dahulu.
 """,
 
         "math": """
@@ -758,435 +717,68 @@ Jawab langsung, jelas, dan berguna.
 
 
 # ============================================================
-# DETERMINISTIC CUTTING LIST
+# TASK CLASSIFIER
 # ============================================================
 
-def solve_cutting_list(lengths, stock_length=6.0):
-    """
-    Exact bin-packing sederhana untuk cutting list.
-    Tujuan:
-    1. jumlah batang minimum
-    2. waste minimum
-
-    lengths = list panjang potongan.
-    """
-
-    if not lengths:
-        return None
-
-    if any(x <= 0 for x in lengths):
-        raise ValueError(
-            "Panjang potongan harus lebih besar dari 0."
-        )
-
-    if any(x > stock_length for x in lengths):
-        return None
-
-    # Urutkan dari terbesar ke terkecil
-    items = sorted(
-        lengths,
-        reverse=True,
-    )
-
-    best = None
-
-    def search(index, bins):
-
-        nonlocal best
-
-        if index >= len(items):
-
-            count = len(bins)
-            waste = sum(
-                stock_length - total
-                for total, _ in bins
-            )
-
-            candidate = (
-                count,
-                round(waste, 9),
-                [
-                    (
-                        round(total, 6),
-                        list(parts),
-                    )
-                    for total, parts in bins
-                ],
-            )
-
-            if best is None or (
-                candidate[0],
-                candidate[1],
-            ) < (
-                best[0],
-                best[1],
-            ):
-                best = candidate
-
-            return
-
-        item = items[index]
-
-        # Jika jumlah batang sudah tidak mungkin
-        # lebih baik dari best, hentikan.
-        if best is not None and len(bins) > best[0]:
-            return
-
-        tried = set()
-
-        for i in range(len(bins)):
-
-            total, parts = bins[i]
-
-            rounded_total = round(total, 9)
-
-            if rounded_total in tried:
-                continue
-
-            tried.add(rounded_total)
-
-            if total + item <= stock_length + 1e-9:
-
-                bins[i] = (
-                    total + item,
-                    parts + [item],
-                )
-
-                search(
-                    index + 1,
-                    bins,
-                )
-
-                bins[i] = (
-                    total,
-                    parts,
-                )
-
-        # Buat batang baru
-        bins.append(
-            (
-                item,
-                [item],
-            )
-        )
-
-        search(
-            index + 1,
-            bins,
-        )
-
-        bins.pop()
-
-    search(0, [])
-
-    return best
-
-
-def extract_cutting_request(text):
-    """
-    Mencoba membaca pola sederhana seperti:
-
-    4 buah @ 3 meter
-    2 x 2 meter
-    4 buah 3m
-    2 pcs @ 2m
-
-    Hanya digunakan jika pola cukup jelas.
-    """
+def classify_task(text):
 
     t = (text or "").lower()
 
-    # Pastikan konteks cutting
-    if not any(
-        word in t
-        for word in (
-            "cutting",
-            "potongan",
-            "batang",
-            "hollow",
-            "pipa",
-        )
-    ):
-        return None
+    coding = [
+        "python", "javascript", "typescript", "php",
+        "html", "css", "sql", "api", "coding",
+        "kode", "program", "programming", "bug",
+        "error", "debug", "github", "vercel",
+        "function", "import ", "async ", "def ",
+    ]
 
-    # Cari panjang batang standar
-    stock_match = re.search(
-        r"(?:batang|panjang).*?"
-        r"(\d+(?:[.,]\d+)?)\s*(?:meter|m)\b",
-        t,
-    )
+    technical = [
+        "tenda", "kanopi", "rangka", "hollow", "pipa",
+        "baja", "las", "fabrikasi", "manufaktur",
+        "produksi", "material", "plat", "besi",
+        "aluminium", "konstruksi", "ukuran", "dimensi",
+        "pagar", "bengkel", "welding", "engineering",
+        "cutting list", "potongan batang",
+        "batang 6 meter", "rangka utama",
+        "rangka sekunder", "purlin", "pengaku",
+        "tiang", "balok utama", "sambungan",
+    ]
 
-    stock = 6.0
+    reasoning = [
+        "analisis", "analisa", "kenapa", "mengapa",
+        "bandingkan", "perbandingan", "strategi",
+        "logika", "alasan", "evaluasi", "pecahkan",
+        "solusi terbaik", "reasoning",
+    ]
 
-    if stock_match:
-        try:
-            stock = float(
-                stock_match.group(1).replace(",", ".")
-            )
-        except Exception:
-            stock = 6.0
+    math = [
+        "hitung", "perhitungan", "berapa", "rumus",
+        "luas", "volume", "persentase", "matematika",
+        "kg", "meter", "mm", "cm", "m2", "m²",
+    ]
 
-    pairs = []
+    creative = [
+        "caption", "iklan", "promosi", "slogan",
+        "desain", "buatkan gambar", "ide konten",
+        "copywriting",
+    ]
 
-    # Pola:
-    # 4 buah @ 3 meter
-    # 4 pcs x 3m
-    # 4 x 3 meter
-    pattern = re.compile(
-        r"(\d+)\s*"
-        r"(?:buah|pcs|pc|potong|potongan)?\s*"
-        r"(?:@|x|×)\s*"
-        r"(\d+(?:[.,]\d+)?)\s*"
-        r"(?:meter|m)\b"
-    )
+    if any(x in t for x in coding):
+        return "coding"
 
-    for match in pattern.finditer(t):
+    if any(x in t for x in technical):
+        return "technical"
 
-        qty = int(match.group(1))
+    if any(x in t for x in math):
+        return "math"
 
-        length = float(
-            match.group(2).replace(",", ".")
-        )
+    if any(x in t for x in reasoning):
+        return "reasoning"
 
-        pairs.append(
-            (
-                qty,
-                length,
-            )
-        )
+    if any(x in t for x in creative):
+        return "creative"
 
-    if not pairs:
-        return None
-
-    # Hilangkan pola yang sebenarnya adalah
-    # panjang batang standar, bila tertangkap.
-    filtered = []
-
-    for qty, length in pairs:
-
-        if length > stock:
-            # Jika pengguna benar-benar meminta
-            # potongan > stock, jangan paksa solver.
-            return {
-                "stock": stock,
-                "pairs": pairs,
-                "invalid": True,
-            }
-
-        filtered.append(
-            (
-                qty,
-                length,
-            )
-        )
-
-    lengths = []
-
-    for qty, length in filtered:
-        lengths.extend(
-            [length] * qty
-        )
-
-    if not lengths:
-        return None
-
-    return {
-        "stock": stock,
-        "pairs": filtered,
-        "lengths": lengths,
-        "invalid": False,
-    }
-
-
-def deterministic_cutting_answer(text):
-    """
-    Jika request cutting list sangat jelas,
-    hitung secara deterministik agar AI tidak
-    melakukan kesalahan packing.
-    """
-
-    data = extract_cutting_request(text)
-
-    if not data:
-        return None
-
-    if data.get("invalid"):
-        return None
-
-    stock = data["stock"]
-    lengths = data["lengths"]
-    pairs = data["pairs"]
-
-    result = solve_cutting_list(
-        lengths,
-        stock,
-    )
-
-    if not result:
-        return None
-
-    count, waste, bins = result
-
-    total_required = sum(lengths)
-    total_stock = count * stock
-    total_waste = total_stock - total_required
-
-    # Buat tabel
-    lines = []
-
-    lines.append("DATA")
-    lines.append("")
-
-    lines.append(f"- Panjang batang standar: {stock:g} meter")
-
-    lines.append("- Kebutuhan potongan:")
-
-    for qty, length in pairs:
-        lines.append(
-            f"  - {qty} buah @ {length:g} meter"
-        )
-
-    lines.append("")
-    lines.append("ASUMSI")
-    lines.append("")
-    lines.append(
-        "1. Tidak ada sambungan."
-    )
-    lines.append(
-        "2. Kerf/kehilangan akibat potongan diabaikan."
-    )
-    lines.append(
-        "3. Setiap potongan harus berasal dari satu batang."
-    )
-    lines.append(
-        "4. Tujuan: jumlah batang minimum dan waste minimum."
-    )
-
-    lines.append("")
-    lines.append("PERHITUNGAN")
-    lines.append("")
-
-    lines.append(
-        f"Total kebutuhan = {total_required:g} meter"
-    )
-
-    lower_bound = int(
-        (total_required + stock - 1e-9) // stock
-    )
-
-    if total_required % stock > 1e-9:
-        lower_bound += 0
-
-    lines.append(
-        f"Batas bawah = ceil({total_required:g} / {stock:g}) "
-        f"= {lower_bound} batang"
-    )
-
-    lines.append("")
-    lines.append("CUTTING LIST")
-    lines.append("")
-    lines.append(
-        "| Batang | Potongan | Terpakai | Sisa |"
-    )
-    lines.append(
-        "|---:|---|---:|---:|"
-    )
-
-    for idx, (total, parts) in enumerate(bins, 1):
-
-        parts_text = " + ".join(
-            f"{p:g}m"
-            for p in parts
-        )
-
-        remaining = stock - total
-
-        lines.append(
-            f"| {idx} | {parts_text} | "
-            f"{total:g}m | {remaining:g}m |"
-        )
-
-    lines.append("")
-    lines.append("VALIDASI")
-    lines.append("")
-
-    valid_capacity = all(
-        total <= stock + 1e-9
-        for total, _ in bins
-    )
-
-    valid_count = len(lengths) == sum(
-        len(parts)
-        for _, parts in bins
-    )
-
-    valid_total = abs(
-        sum(total for total, _ in bins)
-        - total_required
-    ) < 1e-9
-
-    lines.append(
-        f"- Kapasitas batang: "
-        f"{'VALID' if valid_capacity else 'SALAH'}"
-    )
-
-    lines.append(
-        f"- Jumlah potongan: "
-        f"{'VALID' if valid_count else 'SALAH'}"
-    )
-
-    lines.append(
-        f"- Total panjang terpakai: "
-        f"{'VALID' if valid_total else 'SALAH'}"
-    )
-
-    lines.append("")
-    lines.append("TOTAL")
-    lines.append("")
-
-    lines.append(
-        f"- Jumlah batang: {count}"
-    )
-
-    lines.append(
-        f"- Total material: {total_stock:g} meter"
-    )
-
-    lines.append(
-        f"- Total terpakai: {total_required:g} meter"
-    )
-
-    lines.append(
-        f"- Total sisa/waste: {total_waste:g} meter"
-    )
-
-    waste_percent = (
-        total_waste / total_stock * 100
-        if total_stock
-        else 0
-    )
-
-    lines.append(
-        f"- Persentase waste: {waste_percent:.2f}%"
-    )
-
-    lines.append("")
-    lines.append("CATATAN")
-    lines.append("")
-
-    lines.append(
-        "Hasil dihitung dengan optimasi packing "
-        "batang berdasarkan kapasitas batang."
-    )
-
-    if total_waste > 0:
-        lines.append(
-            "Sisa material tidak otomatis berarti limbah; "
-            "sisa tersebut masih dapat digunakan untuk "
-            "potongan lain jika ukuran dan kebutuhan sesuai."
-        )
-
-    return "\n".join(lines)
+    return "general"
 
 
 # ============================================================
@@ -1202,11 +794,7 @@ def call_openrouter(uid, text, task):
 
     r = openrouter.chat.completions.create(
         model=OPENROUTER_FREE_MODEL,
-        messages=build_messages(
-            uid,
-            text,
-            task,
-        ),
+        messages=build_messages(uid, text, task),
         max_tokens=4096,
         extra_headers={
             "HTTP-Referer":
@@ -1216,23 +804,15 @@ def call_openrouter(uid, text, task):
         },
     )
 
-    answer = (
-        r.choices[0].message.content
-        or ""
-    )
+    answer = r.choices[0].message.content or ""
 
     if not answer.strip():
         raise RuntimeError(
-            "OpenRouter Free mengembalikan "
-            "jawaban kosong."
+            "OpenRouter Free mengembalikan jawaban kosong."
         )
 
     selected_model = (
-        getattr(
-            r,
-            "model",
-            None,
-        )
+        getattr(r, "model", None)
         or OPENROUTER_FREE_MODEL
     )
 
@@ -1253,46 +833,45 @@ def call_gemini(uid, text, task):
     task_hint = {
 
         "coding":
-            """
-Berikan kode yang dapat dijalankan.
-Jika pengguna meminta file lengkap,
-berikan file lengkap.
-""",
+            "Berikan kode yang dapat dijalankan "
+            "dan jelaskan perubahan penting.",
 
         "reasoning":
-            """
-Analisis masalah secara teliti sebelum
-memberi kesimpulan.
-""",
+            "Analisis masalah secara teliti "
+            "sebelum memberi kesimpulan.",
 
         "technical":
             """
-Gunakan pertimbangan teknik/manufaktur.
+Gunakan pertimbangan teknik/manufaktur yang praktis.
 
-Untuk cutting list:
-- patuhi kapasitas batang
-- lakukan bin packing
-- jumlah batang harus minimum
-- validasi semua potongan
-- jangan membuat potongan lebih panjang
-  daripada batang
-- jangan membuat sambungan kecuali diminta
+Untuk CUTTING LIST, WAJIB:
+
+- hitung total kebutuhan
+- hitung batas bawah teoritis
+- lakukan packing berdasarkan kapasitas batang
+- pastikan setiap batang tidak melebihi panjang standar
+- validasi jumlah setiap potongan
+- validasi total material
+- validasi total sisa
+- periksa double counting
+- bedakan TRUE WASTE dengan REUSABLE OFFCUT
+- validasi ulang semua angka sebelum menjawab
+
+Jangan menyatakan jumlah batang hanya berdasarkan
+total panjang dibagi panjang batang.
+
+Jika ada komponen lebih panjang dari batang standar,
+jelaskan sambungannya.
 """,
 
         "math":
-            """
-Hitung secara teliti dan tunjukkan asumsi.
-""",
+            "Hitung secara teliti dan tunjukkan asumsi.",
 
         "creative":
-            """
-Buat hasil kreatif yang siap digunakan.
-""",
+            "Buat hasil kreatif yang siap digunakan.",
 
         "general":
-            """
-Jawab langsung dan jelas.
-""",
+            "Jawab langsung dan jelas.",
 
     }.get(task, "")
 
@@ -1316,15 +895,11 @@ Jawab langsung dan jelas.
         contents=prompt,
     )
 
-    answer = (
-        r.text
-        or ""
-    )
+    answer = r.text or ""
 
     if not answer.strip():
         raise RuntimeError(
-            "Gemini mengembalikan "
-            "jawaban kosong."
+            "Gemini mengembalikan jawaban kosong."
         )
 
     return answer, GEMINI_CHAT_MODEL
@@ -1343,35 +918,22 @@ def call_groq(uid, text, task):
 
     if task == "coding":
         model = GROQ_CODING_MODEL
-
-    elif task in (
-        "reasoning",
-        "math",
-    ):
+    elif task in ("reasoning", "math"):
         model = GROQ_REASONING_MODEL
-
     else:
         model = GROQ_FAST_MODEL
 
     r = groq.chat.completions.create(
         model=model,
-        messages=build_messages(
-            uid,
-            text,
-            task,
-        ),
+        messages=build_messages(uid, text, task),
         max_tokens=4096,
     )
 
-    answer = (
-        r.choices[0].message.content
-        or ""
-    )
+    answer = r.choices[0].message.content or ""
 
     if not answer.strip():
         raise RuntimeError(
-            "Groq mengembalikan "
-            "jawaban kosong."
+            "Groq mengembalikan jawaban kosong."
         )
 
     return answer, model
@@ -1391,95 +953,37 @@ def chat_router(uid, text):
         text[:120],
     )
 
-    # --------------------------------------------------------
-    # CUTTING LIST DETERMINISTIC
-    # --------------------------------------------------------
-
-    if task == "technical":
-
-        deterministic = (
-            deterministic_cutting_answer(
-                text
-            )
-        )
-
-        if deterministic:
-
-            log.info(
-                "CUTTING LIST SOLVED "
-                "DETERMINISTICALLY"
-            )
-
-            return (
-                deterministic,
-                "Internal Cutting Engine",
-                "exact-bin-packing",
-                task,
-            )
-
-    # --------------------------------------------------------
-    # PROVIDER PRIORITY
-    # --------------------------------------------------------
-
     if task == "technical":
 
         providers = [
             (
                 "OpenRouter Free",
-                lambda: call_openrouter(
-                    uid,
-                    text,
-                    task,
-                ),
+                lambda: call_openrouter(uid, text, task),
             ),
             (
                 "Gemini",
-                lambda: call_gemini(
-                    uid,
-                    text,
-                    task,
-                ),
+                lambda: call_gemini(uid, text, task),
             ),
             (
                 "Groq Free Tier",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                ),
+                lambda: call_groq(uid, text, task),
             ),
         ]
 
-    elif task in (
-        "coding",
-        "reasoning",
-        "math",
-    ):
+    elif task in ("coding", "reasoning", "math"):
 
         providers = [
             (
                 "OpenRouter Free",
-                lambda: call_openrouter(
-                    uid,
-                    text,
-                    task,
-                ),
+                lambda: call_openrouter(uid, text, task),
             ),
             (
                 "Groq Free Tier",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                ),
+                lambda: call_groq(uid, text, task),
             ),
             (
                 "Gemini",
-                lambda: call_gemini(
-                    uid,
-                    text,
-                    task,
-                ),
+                lambda: call_gemini(uid, text, task),
             ),
         ]
 
@@ -1488,85 +992,56 @@ def chat_router(uid, text):
         providers = [
             (
                 "OpenRouter Free",
-                lambda: call_openrouter(
-                    uid,
-                    text,
-                    task,
-                ),
+                lambda: call_openrouter(uid, text, task),
             ),
             (
                 "Gemini",
-                lambda: call_gemini(
-                    uid,
-                    text,
-                    task,
-                ),
+                lambda: call_gemini(uid, text, task),
             ),
             (
                 "Groq Free Tier",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                ),
+                lambda: call_groq(uid, text, task),
             ),
         ]
 
     errors = []
-
-    # --------------------------------------------------------
-    # AUTO FALLBACK
-    # --------------------------------------------------------
 
     for provider_name, fn in providers:
 
         try:
 
             log.info(
-                "TRY PROVIDER | "
-                "task=%s | provider=%s",
+                "TRY PROVIDER | task=%s | provider=%s",
                 task,
                 provider_name,
             )
 
             answer, model = fn()
 
-            if (
-                not answer
-                or not answer.strip()
-            ):
+            if not answer or not answer.strip():
                 raise RuntimeError(
-                    "Provider mengembalikan "
-                    "jawaban kosong."
+                    "Provider mengembalikan jawaban kosong."
                 )
 
             log.info(
-                "CHAT SUCCESS | "
-                "task=%s | provider=%s | model=%s",
+                "CHAT SUCCESS | task=%s | provider=%s | model=%s",
                 task,
                 provider_name,
                 model,
             )
 
-            return (
-                answer,
-                provider_name,
-                model,
-                task,
-            )
+            return answer, provider_name, model, task
 
         except Exception as e:
 
             error_text = str(e)
 
             errors.append(
-                f"{provider_name}: "
-                f"{error_text[:300]}"
+                f"{provider_name}: {error_text[:300]}"
             )
 
             log.warning(
-                "PROVIDER FAILED | "
-                "provider=%s | error=%s",
+                "PROVIDER FAILED | provider=%s | error=%s",
                 provider_name,
                 error_text[:300],
             )
@@ -1574,15 +1049,15 @@ def chat_router(uid, text):
             continue
 
     log.error(
-        "ALL FREE PROVIDERS FAILED | "
-        "task=%s | errors=%s",
+        "ALL FREE PROVIDERS FAILED | task=%s | errors=%s",
         task,
         " | ".join(errors),
     )
 
     raise RuntimeError(
         "Semua provider AI GRATIS untuk "
-        f"kategori {task} sedang tidak tersedia."
+        f"kategori {task} sedang tidak tersedia. "
+        "Sistem sudah mencoba seluruh fallback gratis."
     )
 
 
@@ -1597,9 +1072,7 @@ async def tg(method, data):
             "TELEGRAM_TOKEN belum diatur."
         )
 
-    async with httpx.AsyncClient(
-        timeout=180
-    ) as client:
+    async with httpx.AsyncClient(timeout=180) as client:
 
         r = await client.post(
             (
@@ -1611,7 +1084,6 @@ async def tg(method, data):
         )
 
         r.raise_for_status()
-
         result = r.json()
 
     if not result.get("ok"):
@@ -1628,16 +1100,12 @@ async def tg_file(file_id):
 
     result = await tg(
         "getFile",
-        {
-            "file_id": file_id
-        },
+        {"file_id": file_id},
     )
 
     path = result["result"]["file_path"]
 
-    async with httpx.AsyncClient(
-        timeout=180
-    ) as client:
+    async with httpx.AsyncClient(timeout=180) as client:
 
         r = await client.get(
             (
@@ -1653,26 +1121,20 @@ async def tg_file(file_id):
 
 
 # ============================================================
-# TELEGRAM SEND TEXT
+# SEND TEXT
 # ============================================================
 
 async def send_text(chat_id, text):
 
     text = text or "Tidak ada jawaban."
 
-    for i in range(
-        0,
-        len(text),
-        3900,
-    ):
+    for i in range(0, len(text), 3900):
 
         await tg(
             "sendMessage",
             {
                 "chat_id": chat_id,
-                "text": text[
-                    i:i + 3900
-                ],
+                "text": text[i:i + 3900],
             },
         )
 
@@ -1683,9 +1145,7 @@ async def send_text(chat_id, text):
 
 async def send_photo(chat_id, data):
 
-    async with httpx.AsyncClient(
-        timeout=180
-    ) as client:
+    async with httpx.AsyncClient(timeout=180) as client:
 
         r = await client.post(
             (
@@ -1714,9 +1174,7 @@ async def send_photo(chat_id, data):
 
 async def send_video(chat_id, data):
 
-    async with httpx.AsyncClient(
-        timeout=300
-    ) as client:
+    async with httpx.AsyncClient(timeout=300) as client:
 
         r = await client.post(
             (
@@ -1761,54 +1219,37 @@ def analyze_image(data, mime, prompt):
                     data=data,
                     mime_type=mime,
                 ),
-                SYSTEM
-                + "\n\n"
-                + prompt,
+                SYSTEM + "\n\n" + prompt,
             ],
         )
 
         if r.text:
-            return (
-                r.text,
-                GEMINI_CHAT_MODEL,
-            )
+            return r.text, GEMINI_CHAT_MODEL
 
     except Exception as e:
 
         errors.append(
-            "Gemini Vision: "
-            + str(e)[:220]
+            "Gemini Vision: " + str(e)[:220]
         )
 
     if openrouter:
 
         try:
 
-            b64 = base64.b64encode(
-                data
-            ).decode()
+            b64 = base64.b64encode(data).decode()
 
             content = [
-
                 {
                     "type": "text",
-                    "text":
-                        SYSTEM
-                        + "\n\n"
-                        + prompt,
+                    "text": SYSTEM + "\n\n" + prompt,
                 },
-
                 {
                     "type": "image_url",
                     "image_url": {
                         "url":
-                            (
-                                f"data:{mime};"
-                                f"base64,{b64}"
-                            )
+                            f"data:{mime};base64,{b64}"
                     },
                 },
-
             ]
 
             r = (
@@ -1859,15 +1300,14 @@ def analyze_image(data, mime, prompt):
 
 
 # ============================================================
-# GEMINI VIDEO ANALYSIS
+# GEMINI VIDEO
 # ============================================================
 
 def analyze_video(data, mime, prompt):
 
     if not gemini:
         raise RuntimeError(
-            "Gemini diperlukan "
-            "untuk analisis video."
+            "Gemini diperlukan untuk analisis video."
         )
 
     uploaded = gemini.files.upload(
@@ -1879,16 +1319,10 @@ def analyze_video(data, mime, prompt):
 
     for _ in range(60):
 
-        f = gemini.files.get(
-            name=uploaded.name
-        )
+        f = gemini.files.get(name=uploaded.name)
 
         state = getattr(
-            getattr(
-                f,
-                "state",
-                None,
-            ),
+            getattr(f, "state", None),
             "name",
             "",
         )
@@ -1901,8 +1335,7 @@ def analyze_video(data, mime, prompt):
         if state == "FAILED":
 
             raise RuntimeError(
-                "Gemini gagal "
-                "memproses video."
+                "Gemini gagal memproses video."
             )
 
         time.sleep(2)
@@ -1913,18 +1346,12 @@ def analyze_video(data, mime, prompt):
             "Video belum siap diproses."
         )
 
-    result = (
-        gemini
-        .models
-        .generate_content(
-            model=GEMINI_CHAT_MODEL,
-            contents=[
-                uploaded,
-                SYSTEM
-                + "\n\n"
-                + prompt,
-            ],
-        )
+    result = gemini.models.generate_content(
+        model=GEMINI_CHAT_MODEL,
+        contents=[
+            uploaded,
+            SYSTEM + "\n\n" + prompt,
+        ],
     )
 
     return result.text or ""
@@ -1943,8 +1370,7 @@ def pollinations_image(prompt):
 
     if not POLLINATIONS_KEY:
         raise RuntimeError(
-            "POLLINATIONS_API_KEY "
-            "belum tersedia."
+            "POLLINATIONS_API_KEY belum tersedia."
         )
 
     from urllib.parse import quote
@@ -1952,15 +1378,12 @@ def pollinations_image(prompt):
     url = (
         f"{POLLINATIONS_BASE_URL}/image/"
         f"{quote(prompt, safe='')}"
-        f"?model="
-        f"{quote(POLLINATIONS_IMAGE_MODEL)}"
+        f"?model={quote(POLLINATIONS_IMAGE_MODEL)}"
         f"&width=1024"
         f"&height=1024"
     )
 
-    with httpx.Client(
-        timeout=300
-    ) as client:
+    with httpx.Client(timeout=300) as client:
 
         r = client.get(
             url,
@@ -1975,16 +1398,14 @@ def pollinations_image(prompt):
         if r.status_code >= 400:
 
             raise RuntimeError(
-                f"Pollinations HTTP "
-                f"{r.status_code}: "
+                f"Pollinations HTTP {r.status_code}: "
                 f"{r.text[:400]}"
             )
 
         if not r.content:
 
             raise RuntimeError(
-                "Pollinations "
-                "mengembalikan data kosong."
+                "Pollinations mengembalikan data kosong."
             )
 
         return r.content
@@ -2000,9 +1421,8 @@ def generate_image(prompt):
         )
 
     raise RuntimeError(
-        "Generate gambar GRATIS "
-        "belum tersedia. Aktifkan "
-        "POLLINATIONS_ENABLED=true "
+        "Generate gambar GRATIS belum tersedia. "
+        "Aktifkan POLLINATIONS_ENABLED=true "
         "dan POLLINATIONS_API_KEY."
     )
 
@@ -2013,9 +1433,7 @@ def generate_image(prompt):
 
 def command_arg(text):
 
-    parts = text.split(
-        maxsplit=1
-    )
+    parts = text.split(maxsplit=1)
 
     return (
         parts[1].strip()
@@ -2044,25 +1462,16 @@ async def handle(update):
     uid = str(
         message
         .get("from", {})
-        .get(
-            "id",
-            chat_id,
-        )
+        .get("id", chat_id)
     )
 
     text = (
-        message.get(
-            "text",
-            "",
-        )
+        message.get("text", "")
         or ""
     )
 
     caption = (
-        message.get(
-            "caption",
-            "",
-        )
+        message.get("caption", "")
         or ""
     )
 
@@ -2082,26 +1491,26 @@ async def handle(update):
 🎥 Gemini Video Analysis
 🎨 Free Image Generation
 
-Teknik / Cutting List:
-→ Exact Cutting Engine
-→ OpenRouter Free
-→ Gemini
-→ Groq
+Technical/Manufacturing:
+OpenRouter Free → Gemini → Groq
 
 Coding:
-→ OpenRouter Free
-→ Groq
-→ Gemini
+OpenRouter Free → Groq → Gemini
 
-Reasoning / Math:
-→ OpenRouter Free
-→ Groq
-→ Gemini
+Reasoning/Math:
+OpenRouter Free → Groq → Gemini
 
-General / Creative:
-→ OpenRouter Free
-→ Gemini
-→ Groq
+General/Creative:
+OpenRouter Free → Gemini → Groq
+
+Cutting List:
+✅ Validasi jumlah potongan
+✅ Validasi kapasitas batang
+✅ Validasi total material
+✅ Validasi sambungan
+✅ True Waste
+✅ Reusable Offcut
+✅ Anti double-counting
 
 Jika provider gagal → otomatis fallback.
 
@@ -2119,10 +1528,7 @@ Jika provider gagal → otomatis fallback.
 
     if text.startswith("/reset"):
 
-        memory.pop(
-            uid,
-            None,
-        )
+        memory.pop(uid, None)
 
         await send_text(
             chat_id,
@@ -2165,23 +1571,19 @@ Groq Reasoning:
 Groq Fast:
 {GROQ_FAST_MODEL}
 
-Cutting Engine:
-✅ Exact Bin Packing
-
 ROUTING:
 
-Technical / Cutting
-→ Internal Cutting Engine
+Technical/Manufacturing
 → OpenRouter Free
 → Gemini
 → Groq
 
-Coding / Reasoning / Math
+Coding/Reasoning/Math
 → OpenRouter Free
 → Groq
 → Gemini
 
-General / Creative
+General/Creative
 → OpenRouter Free
 → Gemini
 → Groq
@@ -2189,6 +1591,15 @@ General / Creative
 Vision
 → Gemini
 → OpenRouter Free
+
+CUTTING LIST VALIDATION:
+✅ Capacity validation
+✅ Quantity validation
+✅ Material validation
+✅ Connection validation
+✅ True waste validation
+✅ Reusable offcut validation
+✅ Double-count validation
 
 PAID MODEL ROUTING:
 DISABLED""",
@@ -2209,8 +1620,8 @@ DISABLED""",
             await send_text(
                 chat_id,
                 "Contoh:\n"
-                "/gambar pagar "
-                "minimalis hitam modern",
+                "/gambar pagar minimalis "
+                "hitam modern",
             )
 
             return
@@ -2222,11 +1633,9 @@ DISABLED""",
 
         try:
 
-            data, provider = (
-                await asyncio.to_thread(
-                    generate_image,
-                    prompt,
-                )
+            data, provider = await asyncio.to_thread(
+                generate_image,
+                prompt,
             )
 
             await send_photo(
@@ -2266,14 +1675,8 @@ DISABLED""",
 
         try:
 
-            data, path = (
-                await tg_file(
-                    message[
-                        "video"
-                    ][
-                        "file_id"
-                    ]
-                )
+            data, path = await tg_file(
+                message["video"]["file_id"]
             )
 
             if len(data) > 20 * 1024 * 1024:
@@ -2291,19 +1694,15 @@ DISABLED""",
                 else "video/mp4"
             )
 
-            answer = (
-                await asyncio.to_thread(
-                    analyze_video,
-                    data,
-                    mime,
-                    caption
-                    or
-                    (
-                        "Analisa video ini secara detail. "
-                        "Jelaskan objek, proses, kondisi, "
-                        "masalah yang terlihat, dan saran praktis."
-                    ),
-                )
+            answer = await asyncio.to_thread(
+                analyze_video,
+                data,
+                mime,
+                caption or (
+                    "Analisa video ini secara detail. "
+                    "Jelaskan objek, proses, kondisi, "
+                    "masalah yang terlihat, dan saran praktis."
+                ),
             )
 
             await send_text(
@@ -2338,14 +1737,8 @@ DISABLED""",
 
         try:
 
-            data, path = (
-                await tg_file(
-                    message[
-                        "photo"
-                    ][-1][
-                        "file_id"
-                    ]
-                )
+            data, path = await tg_file(
+                message["photo"][-1]["file_id"]
             )
 
             mime = (
@@ -2353,10 +1746,7 @@ DISABLED""",
                 or "image/jpeg"
             )
 
-            prompt = (
-                caption
-                or
-                """
+            prompt = caption or """
 Analisa gambar ini secara detail.
 
 Jika terkait manufaktur, bengkel las,
@@ -2375,15 +1765,12 @@ atau produk custom:
 Jangan mengarang ukuran atau data
 yang tidak terlihat pada gambar.
 """
-            )
 
-            answer, model = (
-                await asyncio.to_thread(
-                    analyze_image,
-                    data,
-                    mime,
-                    prompt,
-                )
+            answer, model = await asyncio.to_thread(
+                analyze_image,
+                data,
+                mime,
+                prompt,
             )
 
             await send_text(
@@ -2456,10 +1843,7 @@ yang tidak terlihat pada gambar.
         )
 
         log.info(
-            "CHAT DONE | "
-            "task=%s | "
-            "provider=%s | "
-            "model=%s",
+            "CHAT DONE | task=%s | provider=%s | model=%s",
             task,
             provider,
             model,
@@ -2489,38 +1873,18 @@ async def root():
         "ok": True,
         "service":
             "Designmanufaktur Super AI Agent",
-
         "free_only": True,
-
         "providers": {
-            "gemini":
-                bool(gemini),
-
-            "openrouter_free":
-                bool(openrouter),
-
-            "groq_free_tier":
-                bool(groq),
+            "gemini": bool(gemini),
+            "openrouter_free": bool(openrouter),
+            "groq_free_tier": bool(groq),
         },
-
-        "cutting_engine":
-            "exact-bin-packing",
-
         "models": {
-            "gemini":
-                GEMINI_CHAT_MODEL,
-
-            "openrouter":
-                OPENROUTER_FREE_MODEL,
-
-            "groq_coding":
-                GROQ_CODING_MODEL,
-
-            "groq_reasoning":
-                GROQ_REASONING_MODEL,
-
-            "groq_fast":
-                GROQ_FAST_MODEL,
+            "gemini": GEMINI_CHAT_MODEL,
+            "openrouter": OPENROUTER_FREE_MODEL,
+            "groq_coding": GROQ_CODING_MODEL,
+            "groq_reasoning": GROQ_REASONING_MODEL,
+            "groq_fast": GROQ_FAST_MODEL,
         },
     }
 
@@ -2531,7 +1895,6 @@ async def root():
 
 @app.get("/api")
 async def api_root():
-
     return await root()
 
 
@@ -2541,15 +1904,13 @@ async def api_root():
 
 async def webhook_impl(
     request: Request,
-    x_telegram_bot_api_secret_token:
-        Optional[str],
+    x_telegram_bot_api_secret_token: Optional[str],
 ):
 
     if (
         WEBHOOK_SECRET
         and
-        x_telegram_bot_api_secret_token
-        != WEBHOOK_SECRET
+        x_telegram_bot_api_secret_token != WEBHOOK_SECRET
     ):
 
         raise HTTPException(
@@ -2561,9 +1922,7 @@ async def webhook_impl(
 
     await handle(update)
 
-    return {
-        "ok": True
-    }
+    return {"ok": True}
 
 
 # ============================================================
@@ -2574,9 +1933,7 @@ async def webhook_impl(
 async def webhook(
     request: Request,
     x_telegram_bot_api_secret_token:
-        Optional[str] = Header(
-            default=None
-        ),
+        Optional[str] = Header(default=None),
 ):
 
     return await webhook_impl(
@@ -2593,9 +1950,7 @@ async def webhook(
 async def root_post(
     request: Request,
     x_telegram_bot_api_secret_token:
-        Optional[str] = Header(
-            default=None
-        ),
+        Optional[str] = Header(default=None),
 ):
 
     return await webhook_impl(
