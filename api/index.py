@@ -6,6 +6,7 @@ import time
 import logging
 import re
 import math
+import json
 from typing import Optional
 
 import httpx
@@ -406,214 +407,27 @@ groq = (
 
 
 # ============================================================
-# MEMORY — PERSISTENT GITHUB
+# MEMORY
 # ============================================================
 
 memory = {}
 MAX_MEMORY = 20
 
-# Repository khusus memori.
-# Format repository: Dinal7297/designmanufaktur_memory
-# File per pengguna disimpan di: memory/<user_id>.json
-MEMORY_REPO = os.getenv(
-    "MEMORY_GITHUB_REPO",
-    "Dinal7297/designmanufaktur_memory",
-)
-
-MEMORY_BRANCH = os.getenv(
-    "MEMORY_GITHUB_BRANCH",
-    "main",
-)
-
-MEMORY_DIR = "memory"
+# ============================================================
+# PERSISTENT MEMORY — SEPARATE GITHUB REPOSITORY
+# ============================================================
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
+GITHUB_REPO = os.getenv("GITHUB_REPO", "Dinal7297/designmanufaktur-memory")
+GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
+GITHUB_MEMORY_DIR = "memory"
 GITHUB_API = "https://api.github.com"
-
-GITHUB_TOKEN = os.getenv(
-    "GITHUB_TOKEN",
-    "",
-)
 
 
 def history(uid):
-    uid = str(uid)
     return memory.setdefault(uid, [])
 
 
-def _memory_path(uid):
-    return f"{MEMORY_DIR}/{str(uid)}.json"
-
-
-async def load_persistent_memory(uid):
-    """Load memory pengguna dari repository GitHub khusus memory."""
-
-    uid = str(uid)
-
-    if not GITHUB_TOKEN or not MEMORY_REPO:
-        memory.setdefault(uid, [])
-        return
-
-    url = (
-        f"{GITHUB_API}/repos/{MEMORY_REPO}/contents/"
-        f"{quote(_memory_path(uid), safe='/')}"
-    )
-
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-    try:
-
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(
-                url,
-                headers=headers,
-                params={"ref": MEMORY_BRANCH},
-            )
-
-        if response.status_code == 404:
-            memory[uid] = []
-            return
-
-        response.raise_for_status()
-
-        data = response.json()
-        encoded = data.get("content", "")
-
-        if not encoded:
-            memory[uid] = []
-            return
-
-        raw = base64.b64decode(
-            encoded.replace("\n", "")
-        ).decode("utf-8")
-
-        saved = json.loads(raw)
-
-        if isinstance(saved, dict):
-            saved = saved.get("memory", [])
-
-        if not isinstance(saved, list):
-            saved = []
-
-        memory[uid] = saved[-MAX_MEMORY:]
-
-        log.info(
-            "MEMORY LOAD OK | uid=%s | items=%s | repo=%s",
-            uid,
-            len(memory[uid]),
-            MEMORY_REPO,
-        )
-
-    except Exception as e:
-
-        log.warning(
-            "MEMORY LOAD FAILED | uid=%s | %s",
-            uid,
-            e,
-        )
-
-        memory.setdefault(uid, [])
-
-
-async def save_persistent_memory(uid):
-    """Save memory pengguna ke repository GitHub khusus memory."""
-
-    uid = str(uid)
-
-    if not GITHUB_TOKEN or not MEMORY_REPO:
-        log.warning(
-            "MEMORY SAVE SKIPPED | GITHUB_TOKEN atau MEMORY_GITHUB_REPO belum tersedia"
-        )
-        return
-
-    payload_memory = history(uid)[-MAX_MEMORY:]
-
-    raw = json.dumps(
-        {
-            "user_id": uid,
-            "memory": payload_memory,
-            "updated_at": int(time.time()),
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
-
-    encoded = base64.b64encode(
-        raw.encode("utf-8")
-    ).decode("ascii")
-
-    url = (
-        f"{GITHUB_API}/repos/{MEMORY_REPO}/contents/"
-        f"{quote(_memory_path(uid), safe='/')}"
-    )
-
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-    for attempt in range(3):
-
-        try:
-
-            async with httpx.AsyncClient(timeout=15.0) as client:
-
-                current = await client.get(
-                    url,
-                    headers=headers,
-                    params={"ref": MEMORY_BRANCH},
-                )
-
-                body = {
-                    "message": f"memory: update {uid}",
-                    "content": encoded,
-                    "branch": MEMORY_BRANCH,
-                }
-
-                if current.status_code == 200:
-                    body["sha"] = current.json().get("sha")
-                elif current.status_code != 404:
-                    current.raise_for_status()
-
-                saved = await client.put(
-                    url,
-                    headers=headers,
-                    json=body,
-                )
-
-            if saved.status_code in (200, 201):
-                log.info(
-                    "MEMORY SAVE OK | uid=%s | repo=%s",
-                    uid,
-                    MEMORY_REPO,
-                )
-                return
-
-            if saved.status_code == 409 and attempt < 2:
-                await asyncio.sleep(0.5)
-                continue
-
-            saved.raise_for_status()
-
-        except Exception as e:
-
-            if attempt < 2:
-                await asyncio.sleep(0.5)
-                continue
-
-            log.warning(
-                "MEMORY SAVE FAILED | uid=%s | %s",
-                uid,
-                e,
-            )
-
-
 def remember(uid, role, content):
-
-    uid = str(uid)
 
     history(uid).append({
         "role": role,
@@ -621,6 +435,66 @@ def remember(uid, role, content):
     })
 
     memory[uid] = history(uid)[-MAX_MEMORY:]
+
+
+def _memory_path(uid):
+    return f"{GITHUB_MEMORY_DIR}/{str(uid)}.json"
+
+
+async def load_persistent_memory(uid):
+    uid = str(uid)
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        memory.setdefault(uid, [])
+        return
+    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
+    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
+        if response.status_code == 404:
+            memory[uid] = []
+            return
+        response.raise_for_status()
+        encoded = response.json().get("content", "")
+        if not encoded:
+            memory[uid] = []
+            return
+        raw = base64.b64decode(encoded.replace("\n", "")).decode("utf-8")
+        saved = json.loads(raw)
+        if isinstance(saved, dict):
+            saved = saved.get("memory", [])
+        if not isinstance(saved, list):
+            saved = []
+        memory[uid] = saved[-MAX_MEMORY:]
+        log.info("PERSISTENT MEMORY LOAD OK | uid=%s | items=%s", uid, len(memory[uid]))
+    except Exception as e:
+        log.warning("PERSISTENT MEMORY LOAD FAILED | uid=%s | %s", uid, str(e)[:300])
+        memory.setdefault(uid, [])
+
+
+async def save_persistent_memory(uid):
+    uid = str(uid)
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        log.warning("PERSISTENT MEMORY SAVE SKIPPED | GITHUB_TOKEN/GITHUB_REPO belum tersedia")
+        return
+    raw = json.dumps({"user_id": uid, "memory": history(uid)[-MAX_MEMORY:], "updated_at": int(time.time())}, ensure_ascii=False, indent=2)
+    encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
+    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
+    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            current = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
+            body = {"message": f"memory: update {uid}", "content": encoded, "branch": GITHUB_BRANCH}
+            if current.status_code == 200:
+                body["sha"] = current.json().get("sha")
+            elif current.status_code != 404:
+                current.raise_for_status()
+            saved = await client.put(url, headers=headers, json=body)
+        if saved.status_code not in (200, 201):
+            saved.raise_for_status()
+        log.info("PERSISTENT MEMORY SAVE OK | uid=%s", uid)
+    except Exception as e:
+        log.warning("PERSISTENT MEMORY SAVE FAILED | uid=%s | %s", uid, str(e)[:300])
 
 
 def build_messages(uid, text, task):
@@ -3236,15 +3110,17 @@ hasil material bukan pengganti desain engineer.
         "/reset"
     ):
 
-        memory[uid] = []
-
-        await save_persistent_memory(
-            uid
+        memory.pop(
+            uid,
+            None
         )
+
+        memory[uid] = []
+        await save_persistent_memory(uid)
 
         await send_text(
             chat_id,
-            "✅ Memory permanen pengguna ini dihapus.",
+            "✅ Memory sesi dihapus.",
         )
 
         return
@@ -3308,13 +3184,6 @@ Groq Reasoning:
 
 Groq Fast:
 {GROQ_FAST_MODEL}
-
-💾 MEMORY PERMANEN
-{'✅ AKTIF' if GITHUB_TOKEN and MEMORY_REPO else '❌ TIDAK AKTIF'}
-Repository:
-{MEMORY_REPO}
-Folder:
-{MEMORY_DIR}
 
 💰 PAID MODEL ROUTING
 DISABLED
@@ -3552,15 +3421,9 @@ Jangan mengarang ukuran yang tidak terlihat.
     if not text:
         return
 
-    # ========================================================
-    # LOAD MEMORY PERMANEN SEBELUM AI MENJAWAB
-    # ========================================================
-
-    await load_persistent_memory(
-        uid
-    )
-
     try:
+
+        await load_persistent_memory(uid)
 
         await tg(
             "sendChatAction",
@@ -3593,11 +3456,7 @@ Jangan mengarang ukuran yang tidak terlihat.
             answer,
         )
 
-        # Simpan setelah percakapan berhasil agar memory
-        # tetap tersedia setelah Vercel cold start/redeploy.
-        await save_persistent_memory(
-            uid
-        )
+        await save_persistent_memory(uid)
 
         await send_text(
             chat_id,
@@ -3644,15 +3503,6 @@ async def root():
 
         "civil_calculator":
             True,
-
-        "persistent_memory":
-            bool(GITHUB_TOKEN and MEMORY_REPO),
-
-        "memory_repository":
-            MEMORY_REPO,
-
-        "memory_directory":
-            MEMORY_DIR,
 
         "providers": {
 
