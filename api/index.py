@@ -1936,10 +1936,13 @@ def classify_task(text):
         "acian",
         "galian",
         "urugan",
+        "besi",
         "besi tulangan",
         "tulangan",
         "begel",
         "bendrat",
+        "berat besi",
+        "diameter besi",
     ]
 
     technical = [
