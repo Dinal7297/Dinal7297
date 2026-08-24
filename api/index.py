@@ -87,19 +87,28 @@ POLLINATIONS_IMAGE_MODEL = os.getenv(
 
 POLLINATIONS_BASE_URL = "https://gen.pollinations.ai"
 
+# ------------------------------------------------------------
+# CLOUDFLARE WORKERS AI (FLUX) - GENERATOR GAMBAR UTAMA (BARU)
+# ------------------------------------------------------------
+
 CLOUDFLARE_ACCOUNT_ID = os.getenv(
     "CLOUDFLARE_ACCOUNT_ID",
-    ""
+    "",
 )
 
 CLOUDFLARE_API_TOKEN = os.getenv(
     "CLOUDFLARE_API_TOKEN",
-    ""
+    "",
 )
 
 CLOUDFLARE_IMAGE_MODEL = os.getenv(
     "CLOUDFLARE_IMAGE_MODEL",
-    "@cf/black-forest-labs/flux-1-schnell"
+    "@cf/black-forest-labs/flux-1-schnell",
+)
+
+CLOUDFLARE_ENABLED = bool(
+    CLOUDFLARE_ACCOUNT_ID
+    and CLOUDFLARE_API_TOKEN
 )
 
 
@@ -2633,7 +2642,9 @@ async def send_text(
 
 async def send_photo(
     chat_id,
-    data
+    data,
+    filename="image.png",
+    content_type="image/png",
 ):
 
     async with httpx.AsyncClient(
@@ -2651,9 +2662,9 @@ async def send_photo(
             },
             files={
                 "photo": (
-                    "image.png",
+                    filename,
                     data,
-                    "image/png",
+                    content_type,
                 )
             },
         )
@@ -2894,79 +2905,6 @@ def analyze_video(
 # IMAGE GENERATION
 # ============================================================
 
-def cloudflare_image(
-    prompt
-):
-
-    if not CLOUDFLARE_ACCOUNT_ID:
-
-        raise RuntimeError(
-            "CLOUDFLARE_ACCOUNT_ID belum tersedia."
-        )
-
-    if not CLOUDFLARE_API_TOKEN:
-
-        raise RuntimeError(
-            "CLOUDFLARE_API_TOKEN belum tersedia."
-        )
-
-    url = (
-        "https://api.cloudflare.com/client/v4/"
-        f"accounts/{CLOUDFLARE_ACCOUNT_ID}/"
-        f"ai/run/{CLOUDFLARE_IMAGE_MODEL}"
-    )
-
-    with httpx.Client(
-        timeout=300
-    ) as client:
-
-        r = client.post(
-            url,
-            headers={
-                "Authorization":
-                    f"Bearer {CLOUDFLARE_API_TOKEN}",
-                "Content-Type":
-                    "application/json",
-            },
-            json={
-                "prompt": prompt
-            },
-        )
-
-        if r.status_code >= 400:
-
-            raise RuntimeError(
-                f"Cloudflare HTTP "
-                f"{r.status_code}: "
-                f"{r.text[:400]}"
-            )
-
-        payload = r.json()
-
-        if not payload.get("success"):
-
-            raise RuntimeError(
-                "Cloudflare gagal: "
-                f"{payload.get('errors')}"
-            )
-
-        image_b64 = (
-            payload
-            .get("result", {})
-            .get("image")
-        )
-
-        if not image_b64:
-
-            raise RuntimeError(
-                "Cloudflare mengembalikan data gambar kosong."
-            )
-
-        return base64.b64decode(
-            image_b64
-        )
-
-
 def pollinations_image(
     prompt
 ):
@@ -3024,38 +2962,195 @@ def pollinations_image(
         return r.content
 
 
+def _to_jpeg_bytes(raw: bytes) -> bytes:
+    """
+    Konversi bytes gambar apapun (PNG/WEBP/dll) menjadi JPEG.
+    Jika Pillow tidak tersedia atau gagal decode,
+    kembalikan data asli apa adanya (tidak menggagalkan proses).
+    """
+
+    try:
+
+        from PIL import Image
+        import io as _io
+
+        img = Image.open(
+            _io.BytesIO(raw)
+        )
+
+        if img.mode in (
+            "RGBA",
+            "P",
+            "LA",
+        ):
+            img = img.convert("RGB")
+
+        out = _io.BytesIO()
+
+        img.save(
+            out,
+            format="JPEG",
+            quality=92,
+        )
+
+        return out.getvalue()
+
+    except Exception:
+
+        return raw
+
+
+def cloudflare_flux_image(
+    prompt
+):
+    """
+    Generator gambar utama (BARU): Cloudflare Workers AI - FLUX.
+    Tidak menggantikan generator lama, hanya ditambahkan di depan.
+    """
+
+    if not CLOUDFLARE_ENABLED:
+
+        raise RuntimeError(
+            "Cloudflare Workers AI belum dikonfigurasi "
+            "(CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN kosong)."
+        )
+
+    url = (
+        "https://api.cloudflare.com/client/v4/accounts/"
+        f"{CLOUDFLARE_ACCOUNT_ID}/ai/run/{CLOUDFLARE_IMAGE_MODEL}"
+    )
+
+    with httpx.Client(
+        timeout=300
+    ) as client:
+
+        r = client.post(
+            url,
+            headers={
+                "Authorization":
+                    f"Bearer {CLOUDFLARE_API_TOKEN}",
+                "Content-Type":
+                    "application/json",
+            },
+            json={
+                "prompt": prompt
+            },
+        )
+
+        if r.status_code >= 400:
+
+            raise RuntimeError(
+                f"Cloudflare Workers AI HTTP "
+                f"{r.status_code}: "
+                f"{r.text[:400]}"
+            )
+
+        content_type = r.headers.get(
+            "content-type",
+            "",
+        )
+
+        if content_type.startswith(
+            "image/"
+        ):
+
+            raw = r.content
+
+        else:
+
+            payload = r.json()
+
+            if not payload.get(
+                "success",
+                True,
+            ):
+
+                raise RuntimeError(
+                    "Cloudflare Workers AI gagal: "
+                    f"{payload.get('errors')}"
+                )
+
+            result = (
+                payload.get("result")
+                or {}
+            )
+
+            b64 = result.get("image")
+
+            if not b64:
+
+                raise RuntimeError(
+                    "Cloudflare Workers AI mengembalikan "
+                    "data tidak dikenal."
+                )
+
+            raw = base64.b64decode(b64)
+
+        if not raw:
+
+            raise RuntimeError(
+                "Cloudflare Workers AI mengembalikan data kosong."
+            )
+
+        return _to_jpeg_bytes(raw)
+
+
 def generate_image(
     prompt
 ):
+    """
+    Urutan generator gambar:
+    1. Cloudflare Workers AI (FLUX) - utama (BARU)
+    2. Pollinations - fallback (generator lama, TIDAK dihapus)
+    """
 
-    if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
+    errors = []
+
+    if CLOUDFLARE_ENABLED:
 
         try:
 
             return (
-                cloudflare_image(
+                cloudflare_flux_image(
                     prompt
                 ),
-                "Cloudflare FLUX",
+                "Cloudflare Workers AI (FLUX)",
             )
 
-        except Exception:
+        except Exception as e:
 
             log.exception(
-                "Cloudflare gagal, fallback ke generator lama"
+                "cloudflare flux image generation failed"
+            )
+
+            errors.append(
+                f"Cloudflare: {e}"
             )
 
     if POLLINATIONS_ENABLED:
 
-        return (
-            pollinations_image(
-                prompt
-            ),
-            "Pollinations",
-        )
+        try:
+
+            return (
+                pollinations_image(
+                    prompt
+                ),
+                "Pollinations",
+            )
+
+        except Exception as e:
+
+            log.exception(
+                "pollinations image generation failed"
+            )
+
+            errors.append(
+                f"Pollinations: {e}"
+            )
 
     raise RuntimeError(
-        "Generate gambar GRATIS belum tersedia."
+        "Generate gambar GRATIS belum tersedia.\n"
+        + "\n".join(errors)
     )
 
 
@@ -3338,10 +3433,23 @@ Contoh:
                 )
             )
 
-            await send_photo(
-                chat_id,
-                data,
-            )
+            if provider.startswith(
+                "Cloudflare"
+            ):
+
+                await send_photo(
+                    chat_id,
+                    data,
+                    filename="image.jpg",
+                    content_type="image/jpeg",
+                )
+
+            else:
+
+                await send_photo(
+                    chat_id,
+                    data,
+                )
 
             await send_text(
                 chat_id,
@@ -3620,6 +3728,12 @@ async def root():
             "groq_free_tier":
                 bool(groq),
 
+            "cloudflare_flux":
+                CLOUDFLARE_ENABLED,
+
+            "pollinations_fallback":
+                POLLINATIONS_ENABLED,
+
         },
 
         "civil_features": [
@@ -3656,6 +3770,9 @@ async def root():
 
             "groq_fast":
                 GROQ_FAST_MODEL,
+
+            "cloudflare_image":
+                CLOUDFLARE_IMAGE_MODEL,
 
         },
     }
