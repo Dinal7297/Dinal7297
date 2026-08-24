@@ -87,6 +87,21 @@ POLLINATIONS_IMAGE_MODEL = os.getenv(
 
 POLLINATIONS_BASE_URL = "https://gen.pollinations.ai"
 
+CLOUDFLARE_ACCOUNT_ID = os.getenv(
+    "CLOUDFLARE_ACCOUNT_ID",
+    ""
+)
+
+CLOUDFLARE_API_TOKEN = os.getenv(
+    "CLOUDFLARE_API_TOKEN",
+    ""
+)
+
+CLOUDFLARE_IMAGE_MODEL = os.getenv(
+    "CLOUDFLARE_IMAGE_MODEL",
+    "@cf/black-forest-labs/flux-1-schnell"
+)
+
 
 # ============================================================
 # SYSTEM PROMPT
@@ -2879,6 +2894,79 @@ def analyze_video(
 # IMAGE GENERATION
 # ============================================================
 
+def cloudflare_image(
+    prompt
+):
+
+    if not CLOUDFLARE_ACCOUNT_ID:
+
+        raise RuntimeError(
+            "CLOUDFLARE_ACCOUNT_ID belum tersedia."
+        )
+
+    if not CLOUDFLARE_API_TOKEN:
+
+        raise RuntimeError(
+            "CLOUDFLARE_API_TOKEN belum tersedia."
+        )
+
+    url = (
+        "https://api.cloudflare.com/client/v4/"
+        f"accounts/{CLOUDFLARE_ACCOUNT_ID}/"
+        f"ai/run/{CLOUDFLARE_IMAGE_MODEL}"
+    )
+
+    with httpx.Client(
+        timeout=300
+    ) as client:
+
+        r = client.post(
+            url,
+            headers={
+                "Authorization":
+                    f"Bearer {CLOUDFLARE_API_TOKEN}",
+                "Content-Type":
+                    "application/json",
+            },
+            json={
+                "prompt": prompt
+            },
+        )
+
+        if r.status_code >= 400:
+
+            raise RuntimeError(
+                f"Cloudflare HTTP "
+                f"{r.status_code}: "
+                f"{r.text[:400]}"
+            )
+
+        payload = r.json()
+
+        if not payload.get("success"):
+
+            raise RuntimeError(
+                "Cloudflare gagal: "
+                f"{payload.get('errors')}"
+            )
+
+        image_b64 = (
+            payload
+            .get("result", {})
+            .get("image")
+        )
+
+        if not image_b64:
+
+            raise RuntimeError(
+                "Cloudflare mengembalikan data gambar kosong."
+            )
+
+        return base64.b64decode(
+            image_b64
+        )
+
+
 def pollinations_image(
     prompt
 ):
@@ -2939,6 +3027,23 @@ def pollinations_image(
 def generate_image(
     prompt
 ):
+
+    if CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN:
+
+        try:
+
+            return (
+                cloudflare_image(
+                    prompt
+                ),
+                "Cloudflare FLUX",
+            )
+
+        except Exception:
+
+            log.exception(
+                "Cloudflare gagal, fallback ke generator lama"
+            )
 
     if POLLINATIONS_ENABLED:
 
