@@ -4,6 +4,7 @@ import mimetypes
 import os
 import time
 import logging
+import re
 from typing import Optional
 
 import httpx
@@ -79,7 +80,7 @@ POLLINATIONS_BASE_URL = "https://gen.pollinations.ai"
 
 
 # ============================================================
-# SYSTEM PROMPT — FINAL TECHNICAL VALIDATION
+# SYSTEM PROMPT
 # ============================================================
 
 SYSTEM = """
@@ -120,10 +121,112 @@ GAYA JAWABAN
 - praktis
 - jelas
 - tidak bertele-tele
-- gunakan tabel jika membantu
+- nyaman dibaca di HP
+- gunakan tabel hanya jika benar-benar membantu
 - gunakan satuan yang jelas
 - hasil harus bisa dipakai untuk pekerjaan bengkel
 - jangan membuat jawaban terlihat rumit tanpa alasan
+
+============================================================
+FORMAT TELEGRAM
+============================================================
+
+Jawaban akan dikirim melalui Telegram.
+
+WAJIB membuat jawaban nyaman dibaca pada layar HP.
+
+Jangan menggunakan Markdown yang berlebihan.
+
+HINDARI:
+
+- **bold**
+- *italic*
+- ###
+- ---
+- tabel dengan karakter |
+- dekorasi simbol berlebihan
+- tanda bintang berulang
+- garis pemisah panjang
+
+Jangan membuat jawaban penuh tanda:
+* | # _ ~
+
+Gunakan emoji seperlunya untuk membantu pembacaan.
+
+Contoh heading:
+
+📋 DATA
+
+⚙️ ASUMSI
+
+🧮 PERHITUNGAN
+
+✂️ CUTTING LIST
+
+🔍 VALIDASI
+
+📊 RINGKASAN
+
+📝 CATATAN
+
+🎯 KESIMPULAN
+
+Gunakan daftar:
+
+• Item pertama
+• Item kedua
+• Item ketiga
+
+Untuk status gunakan:
+
+✅ PASS
+❌ FAILED
+⚠️ PERLU DIPERIKSA
+
+Untuk cutting list JANGAN membuat tabel Markdown
+dengan karakter |.
+
+Gunakan format seperti:
+
+✂️ CUTTING LIST
+
+Batang 1
+• Potongan: 3 m + 3 m
+• Terpakai: 6 m
+• Sisa: 0 m
+• Keterangan: Full terpakai
+
+Batang 2
+• Potongan: 4 m + 2 m
+• Terpakai: 6 m
+• Sisa: 0 m
+• Keterangan: 2 m untuk sambungan balok utama
+
+Untuk validasi:
+
+🔍 VALIDASI
+
+CHECK 1 — Jumlah potongan
+✅ PASS
+
+CHECK 2 — Kapasitas batang
+✅ PASS
+
+CHECK 3 — Jumlah batang
+✅ PASS
+
+Jangan menghilangkan angka, satuan, atau informasi teknis
+hanya demi membuat jawaban lebih pendek.
+
+Jika jawaban panjang, prioritaskan:
+
+- hasil
+- angka penting
+- validasi
+- kesimpulan
+- catatan teknis
+
+Jangan mengulang informasi yang sama berkali-kali.
 
 ============================================================
 ATURAN AKURASI
@@ -136,6 +239,7 @@ ATURAN AKURASI
    "Data belum ditentukan."
 
 3. Untuk perhitungan:
+
    - tuliskan asumsi
    - tuliskan rumus penting
    - hitung hasil
@@ -258,7 +362,7 @@ Contoh:
 batang standar = 6 m
 kebutuhan balok = 8 m
 
-Maka harus ditulis misalnya:
+Maka harus ditulis:
 
 6 m + 2 m = 8 m
 
@@ -339,19 +443,21 @@ Jangan menyebut semua sisa sebagai "waste".
 Gunakan dua kategori:
 
 TRUE WASTE
+
 = sisa yang secara praktis tidak dapat digunakan
-  untuk kebutuhan potongan yang sedang dihitung,
-  berdasarkan batas panjang dan kebutuhan yang tersedia.
+untuk kebutuhan potongan yang sedang dihitung,
+berdasarkan batas panjang dan kebutuhan yang tersedia.
 
 REUSABLE OFFCUT
+
 = sisa material yang masih memiliki panjang berguna
-  dan dapat disimpan untuk pekerjaan lain atau kebutuhan
-  potongan lain.
+dan dapat disimpan untuk pekerjaan lain atau kebutuhan
+potongan lain.
 
 Contoh:
 
 Sisa 1 m ketika kebutuhan minimum berikutnya 2 m:
-→ dapat dikategorikan TRUE WASTE.
+→ TRUE WASTE.
 
 Sisa 2 m:
 → jangan otomatis disebut waste.
@@ -455,38 +561,53 @@ Perbaiki perhitungan terlebih dahulu.
 FORMAT OUTPUT CUTTING LIST
 ============================================================
 
-Jika cocok, gunakan format:
+Gunakan format yang nyaman untuk Telegram:
 
-DATA
+📋 DATA
 
-ASUMSI
+⚙️ ASUMSI
 
-PERHITUNGAN
+🧮 PERHITUNGAN
 
-CUTTING LIST
+✂️ CUTTING LIST
 
-| Batang | Potongan | Terpakai | Sisa | Keterangan |
+Batang 1
+• Potongan: ...
+• Terpakai: ...
+• Sisa: ...
+• Keterangan: ...
 
-VALIDASI
+Batang 2
+• Potongan: ...
+• Terpakai: ...
+• Sisa: ...
+• Keterangan: ...
 
-- Jumlah potongan
-- Kapasitas batang
-- Total material
-- Sambungan
-- Double counting
+🔍 VALIDASI
 
-RINGKASAN
+CHECK 1 — Jumlah potongan
+✅ PASS
 
-- Jumlah batang
-- Total material dibeli
-- Total komponen
-- True waste
-- Reusable offcut
-- Total sisa
-- Persentase true waste
-- Persentase total sisa
+CHECK 2 — Kapasitas batang
+✅ PASS
 
-CATATAN
+CHECK 3 — Jumlah batang
+✅ PASS
+
+dan seterusnya.
+
+📊 RINGKASAN
+
+• Jumlah batang
+• Total material dibeli
+• Total komponen
+• True waste
+• Reusable offcut
+• Total sisa
+• Persentase true waste
+• Persentase total sisa
+
+📝 CATATAN
 
 ============================================================
 ATURAN TEKNIS STRUKTUR
@@ -528,6 +649,10 @@ CODING
 - jangan menghilangkan bagian penting dari kode pengguna
 - jika memperbaiki kode, jelaskan bagian yang berubah
 - gunakan praktik aman dan sederhana
+
+Jika pengguna meminta perubahan pada file/program,
+pertahankan fungsi lama kecuali pengguna meminta fungsi
+tersebut dihapus.
 
 ============================================================
 PRIVASI
@@ -585,6 +710,7 @@ def history(uid):
 
 
 def remember(uid, role, content):
+
     history(uid).append({
         "role": role,
         "content": content,
@@ -862,6 +988,13 @@ total panjang dibagi panjang batang.
 
 Jika ada komponen lebih panjang dari batang standar,
 jelaskan sambungannya.
+
+FORMAT TELEGRAM:
+Jawaban harus nyaman dibaca di HP.
+Jangan gunakan Markdown berlebihan.
+Jangan gunakan tabel dengan karakter |.
+Gunakan emoji seperlunya.
+Gunakan bullet • untuk daftar.
 """,
 
         "math":
@@ -1121,22 +1254,317 @@ async def tg_file(file_id):
 
 
 # ============================================================
+# TELEGRAM RESPONSE FORMATTER
+# ============================================================
+
+def clean_telegram_text(text):
+
+    if not text:
+        return "Tidak ada jawaban."
+
+    text = str(text).replace("\r\n", "\n")
+
+    # --------------------------------------------------------
+    # Hapus code fence
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"```[a-zA-Z0-9_+\-]*\n?",
+        "",
+        text,
+    )
+
+    text = text.replace("```", "")
+
+    # --------------------------------------------------------
+    # Hapus heading Markdown
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"^\s*#{1,6}\s*",
+        "",
+        text,
+        flags=re.MULTILINE,
+    )
+
+    # --------------------------------------------------------
+    # Hapus bold
+    # --------------------------------------------------------
+
+    text = text.replace("**", "")
+
+    # --------------------------------------------------------
+    # Hapus italic Markdown
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"(?<!\w)\*(?!\s)",
+        "",
+        text,
+    )
+
+    # --------------------------------------------------------
+    # Hapus underscore dekoratif
+    # --------------------------------------------------------
+
+    text = text.replace("__", "")
+
+    # --------------------------------------------------------
+    # Hapus inline code
+    # --------------------------------------------------------
+
+    text = text.replace("`", "")
+
+    # --------------------------------------------------------
+    # Hapus garis Markdown
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"^\s*[-_*]{3,}\s*$",
+        "",
+        text,
+        flags=re.MULTILINE,
+    )
+
+    # --------------------------------------------------------
+    # Proses tabel Markdown
+    # --------------------------------------------------------
+
+    lines = text.split("\n")
+    cleaned_lines = []
+
+    for line in lines:
+
+        stripped = line.strip()
+
+        if "|" in stripped:
+
+            # Separator tabel
+            if re.fullmatch(
+                r"[\s|:_\-]+",
+                stripped,
+            ):
+                continue
+
+            cells = [
+                cell.strip()
+                for cell in stripped.strip("|").split("|")
+            ]
+
+            cells = [
+                cell
+                for cell in cells
+                if cell
+            ]
+
+            if cells:
+                line = " — ".join(cells)
+
+        # ----------------------------------------------------
+        # Bullet Markdown
+        # ----------------------------------------------------
+
+        line = re.sub(
+            r"^\s*[-*+]\s+",
+            "• ",
+            line,
+        )
+
+        cleaned_lines.append(line)
+
+    text = "\n".join(cleaned_lines)
+
+    # --------------------------------------------------------
+    # Heading emoji
+    # --------------------------------------------------------
+
+    heading_emojis = {
+        "DATA": "📋",
+        "ASUMSI": "⚙️",
+        "PERHITUNGAN": "🧮",
+        "CUTTING LIST": "✂️",
+        "VALIDASI": "🔍",
+        "RINGKASAN": "📊",
+        "CATATAN": "📝",
+        "HASIL": "✅",
+        "KESIMPULAN": "🎯",
+        "KEBUTUHAN": "📐",
+        "MATERIAL": "🔩",
+        "SAMBUNGAN": "🔧",
+        "WASTE": "♻️",
+        "TRUE WASTE": "🗑️",
+        "REUSABLE OFFCUT": "♻️",
+    }
+
+    result = []
+
+    for line in text.split("\n"):
+
+        clean = line.strip()
+
+        if not clean:
+            result.append("")
+            continue
+
+        upper = clean.upper()
+
+        for heading, emoji in heading_emojis.items():
+
+            if upper == heading:
+
+                if not clean.startswith(emoji):
+                    clean = f"{emoji} {heading}"
+
+                break
+
+        result.append(clean)
+
+    text = "\n".join(result)
+
+    # --------------------------------------------------------
+    # Kurangi baris kosong
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text,
+    )
+
+    # --------------------------------------------------------
+    # Kurangi spasi berlebihan
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"[ \t]{2,}",
+        " ",
+        text,
+    )
+
+    return text.strip()
+
+
+# ============================================================
+# SMART TELEGRAM CHUNK
+# ============================================================
+
+def split_telegram_message(
+    text,
+    max_length=3900,
+):
+
+    if len(text) <= max_length:
+        return [text]
+
+    chunks = []
+    current = ""
+
+    paragraphs = text.split("\n\n")
+
+    for paragraph in paragraphs:
+
+        paragraph = paragraph.strip()
+
+        if not paragraph:
+            continue
+
+        candidate = (
+            current
+            + ("\n\n" if current else "")
+            + paragraph
+        )
+
+        if len(candidate) <= max_length:
+
+            current = candidate
+            continue
+
+        if current:
+            chunks.append(
+                current.strip()
+            )
+
+            current = ""
+
+        # ----------------------------------------------------
+        # Jika paragraf masih terlalu panjang,
+        # pecah berdasarkan baris.
+        # ----------------------------------------------------
+
+        lines = paragraph.split("\n")
+
+        for line in lines:
+
+            line = line.strip()
+
+            if not line:
+                continue
+
+            candidate = (
+                current
+                + ("\n" if current else "")
+                + line
+            )
+
+            if len(candidate) <= max_length:
+
+                current = candidate
+
+            else:
+
+                if current:
+                    chunks.append(
+                        current.strip()
+                    )
+
+                current = ""
+
+                # Jika satu baris lebih panjang dari batas
+                while len(line) > max_length:
+
+                    chunks.append(
+                        line[:max_length]
+                    )
+
+                    line = line[max_length:]
+
+                current = line
+
+    if current:
+        chunks.append(
+            current.strip()
+        )
+
+    return chunks
+
+
+# ============================================================
 # SEND TEXT
 # ============================================================
 
 async def send_text(chat_id, text):
 
-    text = text or "Tidak ada jawaban."
+    formatted = clean_telegram_text(text)
 
-    for i in range(0, len(text), 3900):
+    chunks = split_telegram_message(
+        formatted,
+        max_length=3900,
+    )
+
+    for chunk in chunks:
 
         await tg(
             "sendMessage",
             {
                 "chat_id": chat_id,
-                "text": text[i:i + 3900],
+                "text": chunk,
             },
         )
+
+        # Memberi jeda kecil agar pesan panjang tidak
+        # dikirim terlalu cepat.
+        if len(chunks) > 1:
+            await asyncio.sleep(0.25)
 
 
 # ============================================================
@@ -1319,7 +1747,9 @@ def analyze_video(data, mime, prompt):
 
     for _ in range(60):
 
-        f = gemini.files.get(name=uploaded.name)
+        f = gemini.files.get(
+            name=uploaded.name
+        )
 
         state = getattr(
             getattr(f, "state", None),
@@ -1433,7 +1863,9 @@ def generate_image(prompt):
 
 def command_arg(text):
 
-    parts = text.split(maxsplit=1)
+    parts = text.split(
+        maxsplit=1
+    )
 
     return (
         parts[1].strip()
@@ -1503,7 +1935,7 @@ OpenRouter Free → Groq → Gemini
 General/Creative:
 OpenRouter Free → Gemini → Groq
 
-Cutting List:
+✂️ Cutting List:
 ✅ Validasi jumlah potongan
 ✅ Validasi kapasitas batang
 ✅ Validasi total material
@@ -1511,6 +1943,8 @@ Cutting List:
 ✅ True Waste
 ✅ Reusable Offcut
 ✅ Anti double-counting
+
+✨ Format jawaban Telegram sudah dioptimalkan agar lebih rapi.
 
 Jika provider gagal → otomatis fallback.
 
@@ -1545,7 +1979,7 @@ Jika provider gagal → otomatis fallback.
 
         await send_text(
             chat_id,
-            f"""STATUS SUPER AI AGENT
+            f"""🤖 STATUS SUPER AI AGENT
 
 Gemini:
 {'✅ AKTIF' if gemini else '❌ TIDAK AKTIF'}
@@ -1555,6 +1989,8 @@ OpenRouter FREE:
 
 Groq FREE-TIER:
 {'✅ AKTIF' if groq else '❌ TIDAK AKTIF'}
+
+🧠 MODEL
 
 Gemini Chat:
 {GEMINI_CHAT_MODEL}
@@ -1571,7 +2007,7 @@ Groq Reasoning:
 Groq Fast:
 {GROQ_FAST_MODEL}
 
-ROUTING:
+🔀 ROUTING
 
 Technical/Manufacturing
 → OpenRouter Free
@@ -1592,16 +2028,17 @@ Vision
 → Gemini
 → OpenRouter Free
 
-CUTTING LIST VALIDATION:
-✅ Capacity validation
+✂️ CUTTING LIST VALIDATION
+
 ✅ Quantity validation
+✅ Capacity validation
 ✅ Material validation
 ✅ Connection validation
 ✅ True waste validation
 ✅ Reusable offcut validation
 ✅ Double-count validation
 
-PAID MODEL ROUTING:
+💰 PAID MODEL ROUTING
 DISABLED""",
         )
 
@@ -1619,9 +2056,11 @@ DISABLED""",
 
             await send_text(
                 chat_id,
-                "Contoh:\n"
-                "/gambar pagar minimalis "
-                "hitam modern",
+                """🎨 GENERATE GAMBAR
+
+Contoh:
+
+/gambar pagar minimalis hitam modern""",
             )
 
             return
@@ -1874,6 +2313,8 @@ async def root():
         "service":
             "Designmanufaktur Super AI Agent",
         "free_only": True,
+        "telegram_format":
+            "clean_and_mobile_friendly",
         "providers": {
             "gemini": bool(gemini),
             "openrouter_free": bool(openrouter),
@@ -1895,6 +2336,7 @@ async def root():
 
 @app.get("/api")
 async def api_root():
+
     return await root()
 
 
