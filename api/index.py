@@ -55,18 +55,18 @@ GEMINI_VIDEO_MODEL = os.getenv(
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_FREE_MODEL = os.getenv(
     "OPENROUTER_FREE_MODEL",
-    "meta-llama/llama-3.3-70b-instruct:free",
+    "openrouter/free",
 )
 
 GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_FAST_MODEL = os.getenv(
     "GROQ_FAST_MODEL",
-    "llama-3.1-8b-instant"
+    "openai/gpt-oss-20b"
 )
 
 GROQ_REASONING_MODEL = os.getenv(
     "GROQ_REASONING_MODEL",
-    "llama-3.3-70b-versatile"
+    "openai/gpt-oss-120b"
 )
 
 GROQ_CODING_MODEL = os.getenv(
@@ -2250,7 +2250,7 @@ def chat_router(uid, text):
         # -> OpenRouter -> Gemini.
         providers = [
             (
-                "Groq (llama-3.1-8b-instant)",
+                "Groq (gpt-oss-20b)",
                 lambda: call_groq(
                     uid,
                     text,
@@ -2259,7 +2259,7 @@ def chat_router(uid, text):
                 ),
             ),
             (
-                "Groq (llama-3.3-70b-versatile)",
+                "Groq (gpt-oss-120b)",
                 lambda: call_groq(
                     uid,
                     text,
@@ -2300,7 +2300,7 @@ def chat_router(uid, text):
                 ),
             ),
             (
-                "Groq (llama-3.3-70b-versatile)",
+                "Groq (gpt-oss-120b)",
                 lambda: call_groq(
                     uid,
                     text,
@@ -2309,7 +2309,7 @@ def chat_router(uid, text):
                 ),
             ),
             (
-                "Groq (llama-3.1-8b-instant)",
+                "Groq (gpt-oss-20b)",
                 lambda: call_groq(
                     uid,
                     text,
@@ -2342,7 +2342,7 @@ def chat_router(uid, text):
 
         providers = [
             (
-                "Groq (llama-3.3-70b-versatile)",
+                "Groq (gpt-oss-120b)",
                 lambda: call_groq(
                     uid,
                     text,
@@ -2351,7 +2351,7 @@ def chat_router(uid, text):
                 ),
             ),
             (
-                "Groq (llama-3.1-8b-instant)",
+                "Groq (gpt-oss-20b)",
                 lambda: call_groq(
                     uid,
                     text,
@@ -2383,7 +2383,7 @@ def chat_router(uid, text):
         # harian paling besar supaya jarang kena limit.
         providers = [
             (
-                "Groq (llama-3.1-8b-instant)",
+                "Groq (gpt-oss-20b)",
                 lambda: call_groq(
                     uid,
                     text,
@@ -2392,7 +2392,7 @@ def chat_router(uid, text):
                 ),
             ),
             (
-                "Groq (llama-3.3-70b-versatile)",
+                "Groq (gpt-oss-120b)",
                 lambda: call_groq(
                     uid,
                     text,
