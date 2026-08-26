@@ -133,6 +133,42 @@ CLOUDFLARE_ENABLED = bool(
     and CLOUDFLARE_API_TOKEN
 )
 
+# ------------------------------------------------------------
+# CLOUDFLARE WORKERS AI - CHAT TEKS (BARU, TAMBAHAN)
+# ------------------------------------------------------------
+# Memakai ulang CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_API_TOKEN yang
+# sudah ada untuk generate gambar. Cloudflare Workers AI juga
+# punya endpoint chat yang OpenAI-compatible dan gratis (kuota
+# harian neuron gratis). Ini lapisan cadangan tambahan, tidak
+# menggantikan provider manapun yang sudah ada.
+CLOUDFLARE_TEXT_MODEL = os.getenv(
+    "CLOUDFLARE_TEXT_MODEL",
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+)
+
+CLOUDFLARE_TEXT_BACKUP_MODEL = os.getenv(
+    "CLOUDFLARE_TEXT_BACKUP_MODEL",
+    "@cf/meta/llama-3.1-8b-instruct",
+)
+
+CLOUDFLARE_TEXT_ENABLED = CLOUDFLARE_ENABLED
+
+# ------------------------------------------------------------
+# HUGGING FACE INFERENCE ROUTER - CHAT TEKS (BARU, OPSIONAL)
+# ------------------------------------------------------------
+# Provider gratis tambahan. Aktif hanya jika HUGGINGFACE_API_KEY
+# diisi di environment. Kalau tidak diisi, provider ini otomatis
+# dilewati (tidak mengganggu apa pun yang sudah berjalan).
+HUGGINGFACE_API_KEY = os.getenv(
+    "HUGGINGFACE_API_KEY",
+    "",
+)
+
+HUGGINGFACE_MODEL = os.getenv(
+    "HUGGINGFACE_MODEL",
+    "meta-llama/Llama-3.1-8B-Instruct",
+)
+
 
 # ============================================================
 # SYSTEM PROMPT
@@ -451,6 +487,29 @@ groq = (
     else None
 )
 
+# --- BARU: Cloudflare Workers AI (chat teks, endpoint OpenAI-compatible) ---
+cloudflare_text = (
+    OpenAI(
+        api_key=CLOUDFLARE_API_TOKEN,
+        base_url=(
+            f"https://api.cloudflare.com/client/v4/accounts/"
+            f"{CLOUDFLARE_ACCOUNT_ID}/ai/v1"
+        ),
+    )
+    if CLOUDFLARE_TEXT_ENABLED
+    else None
+)
+
+# --- BARU: Hugging Face Inference Router (opsional, gratis) ---
+huggingface = (
+    OpenAI(
+        api_key=HUGGINGFACE_API_KEY,
+        base_url="https://router.huggingface.co/v1",
+    )
+    if HUGGINGFACE_API_KEY
+    else None
+)
+
 
 # ============================================================
 # MEMORY
@@ -467,17 +526,6 @@ GITHUB_REPO = os.getenv("GITHUB_REPO", "Dinal7297/designmanufaktur-memory")
 GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
 GITHUB_MEMORY_DIR = "memory"
 GITHUB_API = "https://api.github.com"
-
-# ============================================================
-# UPLOAD HASIL PEKERJAAN — REPO WEBSITE (terpisah dari repo memory)
-# ============================================================
-# Reuse GITHUB_TOKEN yang sama (asal token itu juga punya akses ke
-# repo website). Kalau perlu token berbeda, set WEBSITE_GITHUB_TOKEN
-# di environment variable hosting.
-WEBSITE_GITHUB_TOKEN = os.getenv("WEBSITE_GITHUB_TOKEN", GITHUB_TOKEN)
-WEBSITE_GITHUB_REPO = os.getenv("WEBSITE_GITHUB_REPO", "Dinal7297/Design-Manufaktur-")
-WEBSITE_GITHUB_BRANCH = os.getenv("WEBSITE_GITHUB_BRANCH", "main")
-WEBSITE_DATA_PATH = "data/pekerjaan.json"
 
 # ------------------------------------------------------------
 # BATAS KONTEKS YANG DIKIRIM KE LLM (BARU)
@@ -605,171 +653,6 @@ async def save_persistent_memory(uid):
         log.info("PERSISTENT MEMORY SAVE OK | uid=%s", uid)
     except Exception as e:
         log.warning("PERSISTENT MEMORY SAVE FAILED | uid=%s | %s", uid, str(e)[:300])
-
-
-# ============================================================
-# UPLOAD HASIL PEKERJAAN KE REPO WEBSITE (fitur baru, aditif)
-# ============================================================
-# Alur: user kirim FOTO ke bot dengan caption diawali "/pekerjaan",
-# format: /pekerjaan <kategori> <lokasi>
-# contoh:  /pekerjaan kanopi cibinong
-#
-# Bot akan:
-#  1) upload foto ke assets/pekerjaan/<kategori>/images/<slug>.jpg
-#  2) tambahkan 1 entri baru ke data/pekerjaan.json
-#  3) push ke branch main -> GitHub Action otomatis generate halaman
-#
-# Tidak menyentuh/mengubah data/pekerjaan.json manapun secara manual,
-# hanya menambah 1 entri baru di akhir array lewat GitHub Contents API.
-
-CATEGORY_FOLDER_MAP = {
-    "kanopi": "kanopi",
-    "pagar": "pagar",
-    "pagar besi": "pagar",
-    "pintu": "pintu",
-    "teralis": "teralis",
-    "tralis": "teralis",
-    "railing": "railing",
-    "tenda": "tenda",
-}
-
-
-def _slugify(text):
-    text = (text or "").strip().lower()
-    text = re.sub(r"[^a-z0-9]+", "-", text)
-    text = re.sub(r"-+", "-", text).strip("-")
-    return text or "item"
-
-
-async def _github_get_json(repo, path, token, branch):
-    """Ambil isi file JSON dari GitHub. Return (data_list, sha) atau ([], None) kalau belum ada."""
-    url = f"{GITHUB_API}/repos/{repo}/contents/{path}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    async with httpx.AsyncClient(timeout=20) as client:
-        resp = await client.get(url, headers=headers, params={"ref": branch})
-    if resp.status_code == 404:
-        return [], None
-    resp.raise_for_status()
-    body = resp.json()
-    encoded = body.get("content", "")
-    raw = base64.b64decode(encoded.replace("\n", "")).decode("utf-8") if encoded else "[]"
-    data = json.loads(raw) if raw.strip() else []
-    if not isinstance(data, list):
-        data = []
-    return data, body.get("sha")
-
-
-async def _github_put_file(repo, path, content_bytes, message, token, branch, sha=None):
-    """Simpan/replace 1 file (bisa teks atau gambar) ke GitHub lewat Contents API."""
-    url = f"{GITHUB_API}/repos/{repo}/contents/{path}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-    encoded = base64.b64encode(content_bytes).decode("ascii")
-    body = {"message": message, "content": encoded, "branch": branch}
-    if sha:
-        body["sha"] = sha
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.put(url, headers=headers, json=body)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def _build_pekerjaan_entry(category_raw, location_raw, image_path):
-    category_slug = CATEGORY_FOLDER_MAP.get(
-        category_raw.strip().lower(), _slugify(category_raw)
-    )
-    category_label = category_raw.strip().title()
-    location_label = location_raw.strip().title()
-    unique_suffix = str(int(time.time()))[-6:]
-    slug = f"{_slugify(category_raw)}-{_slugify(location_raw)}-{unique_suffix}"
-
-    today = time.strftime("%d %B %Y")
-    today_iso = time.strftime("%Y-%m-%d")
-
-    title = f"Pembuatan {category_label} di {location_label}"
-    description = (
-        f"Hasil pekerjaan pembuatan dan pemasangan {category_label.lower()} "
-        f"oleh DESIGN MANUFAKTUR di {location_label}."
-    )
-    content = (
-        f"<p>DESIGN MANUFAKTUR mengerjakan pembuatan {category_label.lower()} "
-        f"sesuai kebutuhan pelanggan. Pekerjaan meliputi proses fabrikasi, "
-        f"pengelasan, perakitan, finishing, dan pemasangan.</p>"
-        f"<p>Proyek ini dikerjakan untuk kebutuhan bangunan di wilayah "
-        f"{location_label}. Setiap pekerjaan dibuat berdasarkan ukuran dan "
-        f"kebutuhan di lokasi.</p>"
-    )
-
-    return {
-        "slug": slug,
-        "title": title,
-        "description": description,
-        "date": today,
-        "dateISO": today_iso,
-        "category": category_label,
-        "image": image_path,
-        "imageAlt": f"{title} hasil pekerjaan DESIGN MANUFAKTUR",
-        "url": f"/pekerjaan/{slug}/",
-        "content": content,
-    }, category_slug
-
-
-async def upload_pekerjaan_from_photo(photo_bytes, category_raw, location_raw):
-    """
-    Upload 1 foto + 1 entri data pekerjaan baru ke repo website.
-    Return dict berisi info hasil untuk ditampilkan ke user.
-    """
-    if not WEBSITE_GITHUB_TOKEN or not WEBSITE_GITHUB_REPO:
-        raise RuntimeError(
-            "WEBSITE_GITHUB_TOKEN / WEBSITE_GITHUB_REPO belum diset di environment variable."
-        )
-
-    # tentukan nama file & path dulu (butuh category_slug)
-    category_slug_preview = CATEGORY_FOLDER_MAP.get(
-        category_raw.strip().lower(), _slugify(category_raw)
-    )
-    filename_preview = f"{_slugify(category_raw)}-{_slugify(location_raw)}-{str(int(time.time()))[-6:]}.jpg"
-    image_path = f"/assets/pekerjaan/{category_slug_preview}/images/{filename_preview}"
-
-    entry, category_slug = _build_pekerjaan_entry(category_raw, location_raw, image_path)
-    # pastikan filename di entry & file yang diupload konsisten
-    filename = image_path.split("/")[-1]
-    github_image_path = f"assets/pekerjaan/{category_slug}/images/{filename}"
-
-    # 1) upload foto
-    await _github_put_file(
-        WEBSITE_GITHUB_REPO,
-        github_image_path,
-        photo_bytes,
-        f"add: foto {entry['slug']}",
-        WEBSITE_GITHUB_TOKEN,
-        WEBSITE_GITHUB_BRANCH,
-    )
-
-    # 2) update data/pekerjaan.json (ambil dulu, tambahkan, simpan lagi)
-    data_list, sha = await _github_get_json(
-        WEBSITE_GITHUB_REPO, WEBSITE_DATA_PATH, WEBSITE_GITHUB_TOKEN, WEBSITE_GITHUB_BRANCH
-    )
-    data_list.append(entry)
-    new_raw = json.dumps(data_list, ensure_ascii=False, indent=2).encode("utf-8")
-    await _github_put_file(
-        WEBSITE_GITHUB_REPO,
-        WEBSITE_DATA_PATH,
-        new_raw,
-        f"add: data pekerjaan {entry['slug']}",
-        WEBSITE_GITHUB_TOKEN,
-        WEBSITE_GITHUB_BRANCH,
-        sha=sha,
-    )
-
-    return entry
 
 
 def build_messages(
@@ -2368,6 +2251,76 @@ def call_groq(uid, text, task, model=None):
     return answer, model
 
 
+# ============================================================
+# CLOUDFLARE WORKERS AI - CHAT (BARU)
+# ============================================================
+
+def call_cloudflare_chat(uid, text, task, model=None):
+
+    if not cloudflare_text:
+        raise RuntimeError(
+            "CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_API_TOKEN belum tersedia."
+        )
+
+    selected = model or CLOUDFLARE_TEXT_MODEL
+
+    r = cloudflare_text.chat.completions.create(
+        model=selected,
+        messages=build_messages(
+            uid,
+            text,
+            task,
+        ),
+    )
+
+    answer = (
+        r.choices[0].message.content
+        or ""
+    )
+
+    if not answer.strip():
+        raise RuntimeError(
+            f"Cloudflare ({selected}) mengembalikan jawaban kosong."
+        )
+
+    return answer, selected
+
+
+# ============================================================
+# HUGGING FACE INFERENCE ROUTER - CHAT (BARU, OPSIONAL)
+# ============================================================
+
+def call_huggingface(uid, text, task, model=None):
+
+    if not huggingface:
+        raise RuntimeError(
+            "HUGGINGFACE_API_KEY belum tersedia."
+        )
+
+    selected = model or HUGGINGFACE_MODEL
+
+    r = huggingface.chat.completions.create(
+        model=selected,
+        messages=build_messages(
+            uid,
+            text,
+            task,
+        ),
+    )
+
+    answer = (
+        r.choices[0].message.content
+        or ""
+    )
+
+    if not answer.strip():
+        raise RuntimeError(
+            f"HuggingFace ({selected}) mengembalikan jawaban kosong."
+        )
+
+    return answer, selected
+
+
 def _is_retryable_rate_limit(error_text):
     """
     True hanya untuk rate limit yang kemungkinan bersifat sesaat
@@ -2518,6 +2471,22 @@ def chat_router(uid, text):
                     task
                 ),
             ),
+            (
+                "Cloudflare Workers AI",
+                lambda: call_cloudflare_chat(
+                    uid,
+                    text,
+                    task,
+                ),
+            ),
+            (
+                "HuggingFace Router",
+                lambda: call_huggingface(
+                    uid,
+                    text,
+                    task,
+                ),
+            ),
         ]
 
     elif task == "coding":
@@ -2595,6 +2564,22 @@ def chat_router(uid, text):
                     task
                 ),
             ),
+            (
+                "Cloudflare Workers AI",
+                lambda: call_cloudflare_chat(
+                    uid,
+                    text,
+                    task,
+                ),
+            ),
+            (
+                "HuggingFace Router",
+                lambda: call_huggingface(
+                    uid,
+                    text,
+                    task,
+                ),
+            ),
         ]
 
     elif task in (
@@ -2664,6 +2649,22 @@ def chat_router(uid, text):
                     task
                 ),
             ),
+            (
+                "Cloudflare Workers AI",
+                lambda: call_cloudflare_chat(
+                    uid,
+                    text,
+                    task,
+                ),
+            ),
+            (
+                "HuggingFace Router",
+                lambda: call_huggingface(
+                    uid,
+                    text,
+                    task,
+                ),
+            ),
         ]
 
     else:
@@ -2730,6 +2731,22 @@ def chat_router(uid, text):
                     uid,
                     text,
                     task
+                ),
+            ),
+            (
+                "Cloudflare Workers AI",
+                lambda: call_cloudflare_chat(
+                    uid,
+                    text,
+                    task,
+                ),
+            ),
+            (
+                "HuggingFace Router",
+                lambda: call_huggingface(
+                    uid,
+                    text,
+                    task,
                 ),
             ),
         ]
@@ -3813,11 +3830,6 @@ Perintah:
 /reset
 /gambar <prompt>
 
-📸 UPLOAD HASIL PEKERJAAN KE WEBSITE
-Kirim foto dengan caption:
-/pekerjaan <kategori> <lokasi>
-Contoh: /pekerjaan kanopi cibinong
-
 ⚠️ Untuk struktur:
 hasil material bukan pengganti desain engineer.
 """,
@@ -3870,6 +3882,12 @@ OpenRouter FREE:
 Groq FREE:
 {'✅ AKTIF' if groq else '❌ TIDAK AKTIF'}
 
+Cloudflare Workers AI (chat):
+{'✅ AKTIF' if cloudflare_text else '❌ TIDAK AKTIF'}
+
+HuggingFace Router (chat):
+{'✅ AKTIF' if huggingface else '❌ TIDAK AKTIF (opsional)'}
+
 🏗️ CIVIL CALCULATOR
 
 ✅ ACTIVE
@@ -3919,6 +3937,12 @@ Groq Reasoning:
 
 Groq Fast:
 {GROQ_FAST_MODEL}
+
+Cloudflare Text:
+{CLOUDFLARE_TEXT_MODEL}
+
+HuggingFace:
+{HUGGINGFACE_MODEL if huggingface else '(tidak diset)'}
 
 💰 PAID MODEL ROUTING
 DISABLED
@@ -4082,59 +4106,6 @@ Jangan mengarang ukuran yang tidak terlihat.
                 chat_id,
                 "❌ Analisis video gagal.\n"
                 + str(e)[:700],
-            )
-
-        return
-
-    # ========================================================
-    # UPLOAD HASIL PEKERJAAN (foto + caption "/pekerjaan <kategori> <lokasi>")
-    # ========================================================
-
-    if message.get("photo") and caption.strip().lower().startswith("/pekerjaan"):
-
-        args = command_arg(caption.strip())
-        parts = args.split(maxsplit=1)
-
-        if len(parts) < 2:
-            await send_text(
-                chat_id,
-                "Format caption belum lengkap.\n\n"
-                "Kirim foto dengan caption:\n"
-                "/pekerjaan <kategori> <lokasi>\n\n"
-                "Contoh:\n/pekerjaan kanopi cibinong",
-            )
-            return
-
-        category_raw, location_raw = parts[0], parts[1]
-
-        await send_text(
-            chat_id,
-            f"⏳ Mengupload foto & menambahkan hasil pekerjaan "
-            f"({category_raw} - {location_raw})...",
-        )
-
-        try:
-            photo_bytes, _ = await tg_file(message["photo"][-1]["file_id"])
-
-            entry = await upload_pekerjaan_from_photo(
-                photo_bytes, category_raw, location_raw
-            )
-
-            await send_text(
-                chat_id,
-                "✅ Berhasil ditambahkan!\n\n"
-                f"Judul: {entry['title']}\n"
-                f"Kategori: {entry['category']}\n\n"
-                "Halaman akan otomatis dibuat dalam 1-2 menit "
-                "(GitHub Action sedang generate halaman).\n"
-                f"Link nanti: https://design-manufaktur.vercel.app{entry['url']}",
-            )
-
-        except Exception as e:
-            log.exception("upload pekerjaan failed")
-            await send_text(
-                chat_id,
-                "❌ Gagal upload hasil pekerjaan.\n" + str(e)[:700],
             )
 
         return
