@@ -3818,6 +3818,12 @@ Kirim foto dengan caption:
 /pekerjaan <kategori> <lokasi>
 Contoh: /pekerjaan kanopi cibinong
 
+🧠 AUTO JUDUL + CAPTION MULTI-PLATFORM
+Kirim foto/video dengan caption:
+/caption <nama produk>
+Contoh: /caption kanopi minimalis
+(Judul + caption Instagram/TikTok/Facebook/WA sekaligus)
+
 ⚠️ Untuk struktur:
 hasil material bukan pengganti desain engineer.
 """,
@@ -4001,6 +4007,108 @@ Contoh:
                 chat_id,
                 "❌ Generate gambar gagal.\n"
                 + str(e)[:700],
+            )
+
+        return
+
+    # ========================================================
+    # AUTO JUDUL + CAPTION MULTI-PLATFORM (foto/video + "/caption <nama produk>")
+    # ========================================================
+    # Kirim foto ATAU video dengan caption diawali "/caption", format:
+    # /caption <nama produk>
+    # Contoh: /caption kanopi minimalis
+    #
+    # Bot akan melihat foto/videonya (Gemini Vision/Video, sudah ada),
+    # lalu membuat judul + caption yang disesuaikan gaya tiap platform
+    # (Instagram, TikTok, Facebook, WhatsApp) supaya menarik & mudah FYP.
+
+    if (message.get("photo") or message.get("video")) and caption.strip().lower().startswith("/caption"):
+
+        produk = command_arg(caption.strip())
+
+        if not produk:
+            await send_text(
+                chat_id,
+                "Sebutkan nama produknya juga ya.\n\n"
+                "Kirim foto/video dengan caption:\n"
+                "/caption <nama produk>\n\n"
+                "Contoh:\n/caption kanopi minimalis",
+            )
+            return
+
+        await send_text(
+            chat_id,
+            f"🧠 Menganalisis {'video' if message.get('video') else 'foto'} "
+            f"& menyusun judul + caption untuk \"{produk}\"...",
+        )
+
+        caption_prompt = f"""
+Kamu adalah social media copywriter & marketing strategist untuk
+bengkel fabrikasi besi "DESIGN MANUFAKTUR" (kanopi, pagar, pintu,
+teralis, railing, tenda, custom fabrikasi besi, area Cibinong/Bogor).
+
+Lihat gambar/video yang dikirim. Produk yang dipromosikan: "{produk}".
+
+Buat paket promosi siap pakai dalam Bahasa Indonesia, dengan struktur
+PERSIS seperti ini (pakai heading ini apa adanya):
+
+🎯 JUDUL/HOOK
+(1 kalimat pendek super menarik, bikin orang berhenti scroll)
+
+📸 CAPTION INSTAGRAM
+(gaya estetik, 2-4 kalimat, boleh emoji secukupnya, sebutkan
+keunggulan produk yang TERLIHAT di foto/video, tutup dengan
+call-to-action untuk DM/hubungi. Sertakan 6-8 hashtag relevan
+di baris terpisah paling bawah.)
+
+🎵 CAPTION TIKTOK
+(gaya santai & FYP-friendly, kalimat pertama HARUS hook kuat untuk
+3 detik pertama, singkat-singkat, boleh pakai emoji, sebutkan
+progress pengerjaan/hasil akhir, tutup CTA "cek link di bio /
+komen order". Sertakan 5-7 hashtag campuran niche (kanopi, pagar,
+bengkel las, dll) + hashtag umum yang lagi rame di kategori
+konstruksi/rumah.)
+
+📘 CAPTION FACEBOOK
+(gaya lebih naratif/testimoni, 3-5 kalimat, cocok untuk audiens
+lokal Cibinong/Bogor yang cari jasa, sebutkan proses pengerjaan
+dan kualitas, tutup dengan ajakan hubungi nomor/WA.)
+
+💬 CAPTION WHATSAPP STATUS
+(sangat singkat, 1-2 kalimat + emoji, langsung closing, cocok
+ditempel di status WA Business.)
+
+Aturan penting:
+- Jangan mengarang detail yang tidak terlihat di gambar/video.
+- Jangan pakai bahasa yang terdengar seperti template AI generik.
+- Sesuaikan nada bicara untuk UMKM bengkel las lokal, bukan brand besar.
+- Jangan beri disclaimer atau catatan tambahan di luar struktur di atas.
+"""
+
+        try:
+            if message.get("video"):
+                data, path = await tg_file(message["video"]["file_id"])
+                if len(data) > (20 * 1024 * 1024):
+                    await send_text(chat_id, "❌ Video lebih dari 20 MB.")
+                    return
+                mime = (
+                    "video/quicktime"
+                    if path.lower().endswith(".mov")
+                    else mimetypes.guess_type(path)[0] or "video/mp4"
+                )
+                hasil = await asyncio.to_thread(analyze_video, data, mime, caption_prompt)
+            else:
+                data, path = await tg_file(message["photo"][-1]["file_id"])
+                mime = mimetypes.guess_type(path)[0] or "image/jpeg"
+                hasil, _ = analyze_image(data, mime, caption_prompt)
+
+            await send_text(chat_id, hasil or "❌ Tidak ada hasil dari AI.")
+
+        except Exception as e:
+            log.exception("caption generator failed")
+            await send_text(
+                chat_id,
+                "❌ Gagal membuat judul & caption.\n" + str(e)[:700],
             )
 
         return
