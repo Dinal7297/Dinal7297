@@ -3038,7 +3038,85 @@ def clean_telegram_text(text):
     )
 
     return text.strip()
+# ============================================================
+# FORMAT PREMIUM (HIGHLIGHT, PEMISAH, TABEL)
+# ============================================================
 
+def highlight_angka(text):
+    text = re.sub(r"(Total|Hasil|Berat|Volume|Kebutuhan|Jumlah|Luas|Panjang)(\s*[:=]\s*)([\d.,]+)", 
+                  r"\1\2🔥 \3", text)
+    text = re.sub(r"(\d+(?:[.,]\d+)?)\s*(kg|m|m²|m³|batang|zak|liter|pcs|buah)", 
+                  r"**\1 \2**", text)
+    return text
+
+
+def tabel_ringkas(judul, data):
+    lines = [f"📋 {judul}"]
+    for key, value in data:
+        lines.append(f"• {key}: {value}")
+    return "\n".join(lines)
+
+
+def pemisah():
+    return "━━━━━━━━━━━━━━━━"
+
+
+def ringkasan_cepat(items):
+    lines = ["✅ RINGKASAN CEPAT"]
+    for item in items:
+        lines.append(f"• {item}")
+    return "\n".join(lines)
+
+
+def format_premium(text):
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    
+    lines = text.split("\n")
+    unique_lines = []
+    seen = set()
+    for line in lines:
+        clean = line.strip()
+        if clean and clean not in seen:
+            unique_lines.append(clean)
+            seen.add(clean)
+        elif not clean:
+            unique_lines.append("")
+    text = "\n".join(unique_lines)
+    
+    if re.search(r"Batang \d+:", text):
+        batang_match = re.findall(r"Batang (\d+): (\d+) potong @([\d.]+) m \(sisa ([\d.]+) m\)", text)
+        if batang_match:
+            total_batang = len(batang_match)
+            total_sisa = sum(float(x[3]) for x in batang_match)
+            panjang = batang_match[0][2]
+            text = re.sub(
+                r"Batang \d+: \d+ potong @[\d.]+ m \(sisa [\d.]+ m\)\n?",
+                "",
+                text
+            )
+            text = text.replace(
+                "Pembagian batang standar 6 m",
+                f"📦 {total_batang} batang @{panjang} m\n♻️ Total sisa: {total_sisa:.3f} m (bisa dipakai ulang)"
+            )
+    
+    text = highlight_angka(text)
+    
+    text = text.replace("📊 RINGKASAN", f"{pemisah()}\n📊 RINGKASAN")
+    text = text.replace("📝 CATATAN", f"{pemisah()}\n📝 CATATAN")
+    text = text.replace("⚠️ CATATAN", f"{pemisah()}\n⚠️ CATATAN")
+    
+    text = text.replace("DATA", "📋 DATA")
+    text = text.replace("ASUMSI", "⚙️ ASUMSI")
+    text = text.replace("PERHITUNGAN", "🧮 PERHITUNGAN")
+    text = text.replace("CUTTING LIST", "✂️ CUTTING LIST")
+    text = text.replace("VALIDASI", "🔍 VALIDASI")
+    text = text.replace("KESIMPULAN", "🎯 KESIMPULAN")
+    text = text.replace("TEKNIK LAS", "🔧 TEKNIK LAS")
+    text = text.replace("CIVIL CALCULATOR", "🏗️ CIVIL CALCULATOR")
+    
+    text = re.sub(r"• Item pertama\n• Item kedua\n• Item ketiga", "", text)
+    
+    return text.strip()
 
 # ============================================================
 # TELEGRAM CHUNK
@@ -4418,3 +4496,11 @@ async def root_post(
         request,
         x_telegram_bot_api_secret_token,
     )
+async def send_text(chat_id, text):
+    formatted = clean_telegram_text(text)
+    formatted = format_premium(formatted)
+    chunks = split_telegram_message(formatted, max_length=3900)
+    for chunk in chunks:
+        await tg("sendMessage", {"chat_id": chat_id, "text": chunk})
+        if len(chunks) > 1:
+            await asyncio.sleep(0.25)
