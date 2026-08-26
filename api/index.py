@@ -18,9 +18,8 @@ from openai import OpenAI
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("designmanufaktur")
-app = FastAPI(title="Designmanufaktur Super AI Agent + Kalkulator")
+app = FastAPI(title="Designmanufaktur Super AI Agent")
 
-# ENV
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
@@ -40,7 +39,6 @@ GROQ_CODING_MODEL = os.getenv("GROQ_CODING_MODEL", "qwen/qwen3-32b")
 CLOUDFLARE_TEXT_MODEL = os.getenv("CLOUDFLARE_TEXT_MODEL", "@cf/meta/llama-3.3-70b-instruct-fp8-fast")
 HUGGINGFACE_MODEL = os.getenv("HUGGINGFACE_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
 
-# AI CLIENTS
 gemini = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 openrouter = OpenAI(api_key=OPENROUTER_KEY, base_url="https://openrouter.ai/api/v1") if OPENROUTER_KEY else None
 groq = OpenAI(api_key=GROQ_KEY, base_url="https://api.groq.com/openai/v1") if GROQ_KEY else None
@@ -71,7 +69,6 @@ Untuk cutting list: hitung semua kebutuhan, hitung batas bawah teoritis, lakukan
 JANGAN PERNAH menampilkan API key, token, password, secret.
 """
 
-# MEMORY
 memory = {}
 MAX_MEMORY = 20
 GITHUB_API = "https://api.github.com"
@@ -151,7 +148,7 @@ def build_messages(uid, text, task, max_turns=MAX_CONTEXT_TURNS, max_chars_per_i
         "technical": "TUGAS TEKNIK/MANUFAKTUR. Prioritaskan ukuran, material, rangka, fabrikasi, cutting list, jumlah batang, sambungan, efisiensi material, asumsi teknik, pekerjaan sipil, perhitungan las, berat material. Untuk cutting list WAJIB validasi seluruh angka sebelum menjawab.",
         "civil": "TUGAS CIVIL CALCULATOR. Prioritaskan volume, dimensi, kebutuhan material, semen, pasir, kerikil, air, besi, berat besi, pondasi, dinding, plester, acian, galian, urugan. Jika data tidak diberikan jangan mengarang. Untuk struktur hasil adalah estimasi awal, bukan pengganti desain engineer.",
         "math": "TUGAS MATEMATIKA. Hitung dengan teliti. Tampilkan rumus penting. Gunakan satuan. Periksa kembali hasil.",
-        "creative": "TUGAS KREATIF. Buat hasil yang siap digunakan, práktis, menarik, dan sesuai tujuan.",
+        "creative": "TUGAS KREATIF. Buat hasil yang siap digunakan, praktis, menarik, dan sesuai tujuan.",
         "general": "TUGAS UMUM. Jawab langsung, jelas, dan berguna.",
     }.get(task, "")
     return [
@@ -201,138 +198,6 @@ def to_meter(value, unit):
     if unit in ("cm",): return value / 100
     if unit in ("m", "meter", "meters"): return value
     return value
-
-# ============================================================
-# FORMAT PREMIUM (BARU)
-# ============================================================
-
-def format_premium(text):
-    text = text.replace("**", "")
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    lines = text.split("\n")
-    unique_lines = []
-    seen = set()
-    for line in lines:
-        clean = line.strip()
-        if clean and clean not in seen:
-            unique_lines.append(clean)
-            seen.add(clean)
-        elif not clean:
-            unique_lines.append("")
-    text = "\n".join(unique_lines)
-    if re.search(r"Batang \d+:", text):
-        batang_match = re.findall(r"Batang (\d+): (\d+) potong @([\d.]+) m \(sisa ([\d.]+) m\)", text)
-        if batang_match:
-            total_batang = len(batang_match)
-            total_sisa = sum(float(x[3]) for x in batang_match)
-            panjang = batang_match[0][2]
-            text = re.sub(r"Batang \d+: \d+ potong @[\d.]+ m \(sisa [\d.]+ m\)\n?", "", text)
-            text = text.replace("Pembagian batang standar 6 m", f"📦 {total_batang} batang @{panjang} m\n♻️ Total sisa: {total_sisa:.3f} m (bisa dipakai ulang)")
-    text = text.replace("📊 RINGKASAN", f"━━━━━━━━━━━━━━━━\n📊 RINGKASAN")
-    text = text.replace("📝 CATATAN", f"━━━━━━━━━━━━━━━━\n📝 CATATAN")
-    text = text.replace("⚠️ CATATAN", f"━━━━━━━━━━━━━━━━\n⚠️ CATATAN")
-    text = text.replace("DATA", "📋 DATA")
-    text = text.replace("ASUMSI", "⚙️ ASUMSI")
-    text = text.replace("PERHITUNGAN", "🧮 PERHITUNGAN")
-    text = text.replace("CUTTING LIST", "✂️ CUTTING LIST")
-    text = text.replace("VALIDASI", "🔍 VALIDASI")
-    text = text.replace("KESIMPULAN", "🎯 KESIMPULAN")
-    text = text.replace("TEKNIK LAS", "🔧 TEKNIK LAS")
-    text = text.replace("CIVIL CALCULATOR", "🏗️ CIVIL CALCULATOR")
-    return text.strip()
-
-def clean_telegram_text(text):
-    if not text: return "Tidak ada jawaban."
-    text = str(text).replace("\r\n", "\n")
-    text = re.sub(r"```[a-zA-Z0-9_+\-]*\n?", "", text)
-    text = text.replace("```", "")
-    text = re.sub(r"^\s*#{1,6}\s*", "", text, flags=re.MULTILINE)
-    text = text.replace("**", "")
-    text = re.sub(r"(?<!\w)\*(?!\s)", "", text)
-    text = text.replace("__", "")
-    text = text.replace("`", "")
-    text = re.sub(r"^\s*[-_*]{3,}\s*$", "", text, flags=re.MULTILINE)
-    text = format_premium(text)
-    return text.strip()
-
-def split_telegram_message(text, max_length=3900):
-    if len(text) <= max_length: return [text]
-    chunks = []
-    current = ""
-    paragraphs = text.split("\n\n")
-    for paragraph in paragraphs:
-        paragraph = paragraph.strip()
-        if not paragraph: continue
-        candidate = current + ("\n\n" if current else "") + paragraph
-        if len(candidate) <= max_length: current = candidate; continue
-        if current: chunks.append(current.strip()); current = ""
-        lines = paragraph.split("\n")
-        for line in lines:
-            line = line.strip()
-            if not line: continue
-            candidate = current + ("\n" if current else "") + line
-            if len(candidate) <= max_length: current = candidate
-            else:
-                if current: chunks.append(current.strip()); current = ""
-                while len(line) > max_length: chunks.append(line[:max_length]); line = line[max_length:]
-                current = line
-    if current: chunks.append(current.strip())
-    return chunks
-
-async def send_text(chat_id, text):
-    formatted = clean_telegram_text(text)
-    formatted = format_premium(formatted)
-    chunks = split_telegram_message(formatted, max_length=3900)
-    for chunk in chunks:
-        await tg("sendMessage", {"chat_id": chat_id, "text": chunk})
-        if len(chunks) > 1: await asyncio.sleep(0.25)
-
-async def tg(method, data):
-    if not TELEGRAM_TOKEN: raise RuntimeError("TELEGRAM_TOKEN belum diatur.")
-    async with httpx.AsyncClient(timeout=180) as client:
-        r = await client.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}", json=data)
-        r.raise_for_status()
-        result = r.json()
-    if not result.get("ok"): raise RuntimeError(str(result))
-    return result
-
-async def tg_file(file_id):
-    result = await tg("getFile", {"file_id": file_id})
-    path = result["result"]["file_path"]
-    async with httpx.AsyncClient(timeout=180) as client:
-        r = await client.get(f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{path}")
-        r.raise_for_status()
-    return r.content, path
-
-async def send_photo(chat_id, data, filename="image.png", content_type="image/png"):
-    async with httpx.AsyncClient(timeout=180) as client:
-        r = await client.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto", data={"chat_id": str(chat_id)}, files={"photo": (filename, data, content_type)})
-        r.raise_for_status()
-
-async def send_video(chat_id, data):
-    async with httpx.AsyncClient(timeout=300) as client:
-        r = await client.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo", data={"chat_id": str(chat_id)}, files={"video": ("video.mp4", data, "video/mp4")})
-        r.raise_for_status()
-
-# ============================================================
-# TASK CLASSIFIER
-# ============================================================
-
-def classify_task(text):
-    t = (text or "").lower()
-    coding = ["python", "javascript", "typescript", "php", "html", "css", "sql", "api", "coding", "kode", "program", "programming", "bug", "error", "debug", "github", "vercel", "function", "import ", "async ", "def "]
-    civil = ["sipil", "beton", "cor", "coran", "pondasi", "footplat", "sloof", "kolom", "balok", "plat beton", "plat lantai", "dinding", "tembok", "bata", "batako", "plester", "acian", "galian", "urugan", "besi", "besi tulangan", "tulangan", "begel", "bendrat", "berat besi", "diameter besi"]
-    technical = ["tenda", "kanopi", "rangka", "hollow", "pipa", "baja", "las", "fabrikasi", "manufaktur", "produksi", "material", "plat", "besi", "aluminium", "konstruksi", "ukuran", "dimensi", "pagar", "bengkel", "welding", "engineering", "cutting list", "potongan batang", "batang 6 meter", "rangka utama", "rangka sekunder", "purlin", "pengaku", "tiang", "balok utama", "sambungan", "elektroda", "kawat las", "berat hollow", "berat pipa", "berat plat"]
-    reasoning = ["analisis", "analisa", "kenapa", "mengapa", "bandingkan", "perbandingan", "strategi", "logika", "alasan", "evaluasi", "pecahkan", "solusi terbaik", "reasoning"]
-    math_keywords = ["hitung", "perhitungan", "berapa", "rumus", "luas", "volume", "persentase", "matematika", "kg", "meter", "mm", "cm", "m2", "m²"]
-    creative = ["caption", "iklan", "promosi", "slogan", "desain", "buatkan gambar", "ide konten", "copywriting"]
-    if any(x in t for x in coding): return "coding"
-    if any(x in t for x in civil): return "civil"
-    if any(x in t for x in technical): return "technical"
-    if any(x in t for x in reasoning): return "reasoning"
-    if any(x in t for x in math_keywords): return "math"
-    if any(x in t for x in creative): return "creative"
-    return "general"
 
 # ============================================================
 # KALKULATOR TEKNIK LAS
@@ -411,346 +276,7 @@ def converter(text):
         m = re.search(r"(\d+(?:[.,]\d+)?)\s*ton", t)
         if m: v = parse_number(m.group(1)); return f"✅ {fmt(v)} ton = {fmt(v*1000)} kg"
     return None
-# ============================================================
-# MATERIAL CALCULATOR (PAGAR, KANOPI, TENDA, RANGKA, TANGGA, RAK, PINTU)
-# ============================================================
 
-def pagar_material(text):
-    t = text.lower()
-    pm = re.search(r"(\d+(?:[.,]\d+)?)\s*m", t)
-    if not pm: return None
-    panjang = parse_number(pm.group(1))
-    tm = re.search(r"tinggi\s*(\d+(?:[.,]\d+)?)\s*m", t)
-    tinggi = parse_number(tm.group(1)) if tm else 1.5
-    jarak_tiang = 2.0
-    jml_tiang = math.ceil(panjang / jarak_tiang) + 1
-    total_tiang = jml_tiang * tinggi
-    total_horiz = panjang * 2
-    jml_vert = math.ceil(panjang / 0.2)
-    total_vert = jml_vert * tinggi
-    total_hollow = total_tiang + total_horiz + total_vert
-    berat_utama = total_tiang * 2.4
-    berat_vert = total_vert * 1.2
-    total_las = total_hollow / 2
-    elektroda = total_las * 0.6
-    batang_utama = math.ceil(total_tiang / 6)
-    batang_vert = math.ceil(total_vert / 6)
-    return f"🔧 KEBUTUHAN MATERIAL PAGAR\n\n📋 DATA\n• Panjang: {fmt(panjang)} m\n• Tinggi: {fmt(tinggi)} m\n• Jarak tiang: {fmt(jarak_tiang)} m\n\n🧮 PERHITUNGAN\n• Jumlah tiang: {jml_tiang}\n• Total panjang tiang: {fmt(total_tiang)} m\n• Total horizontal: {fmt(total_horiz)} m\n• Total vertikal: {fmt(total_vert)} m\n\n📊 RINGKASAN\n• Hollow 40x40x2: {fmt(total_tiang)} m ({batang_utama} batang)\n• Hollow 20x20x1.5: {fmt(total_vert)} m ({batang_vert} batang)\n• Total las: {fmt(total_las)} m\n• Elektroda: {fmt(elektroda)} kg\n• Berat total: {fmt(berat_utama + berat_vert)} kg\n\n📝 CATATAN\nBeli 10-20% lebih untuk cadangan."
-
-
-def kanopi_material(text):
-    dims = extract_dimensions(text)
-    if len(dims) < 2: return None
-    panjang, lebar = dims[0], dims[1]
-    tm = re.search(r"tinggi\s*(\d+(?:[.,]\d+)?)\s*m", t := text.lower())
-    tinggi = parse_number(tm.group(1)) if tm else 2.5
-    jarak_kuda = 1.5
-    jml_kuda = math.ceil(panjang / jarak_kuda) + 1
-    total_kuda = jml_kuda * (lebar + 0.5)
-    total_gording = panjang * 3
-    jml_reng = math.ceil(panjang / 0.5)
-    total_reng = jml_reng * lebar
-    total_hollow = total_kuda + total_gording + total_reng
-    berat_kuda = total_kuda * 2.4
-    berat_gording = total_gording * 1.2
-    berat_reng = total_reng * 1.2
-    total_las = total_hollow / 2
-    elektroda = total_las * 0.6
-    luas_atap = panjang * lebar
-    batang_kuda = math.ceil(total_kuda / 6)
-    batang_gording = math.ceil(total_gording / 6)
-    batang_reng = math.ceil(total_reng / 6)
-    return f"🔧 KEBUTUHAN MATERIAL KANOPI\n\n📋 DATA\n• Panjang: {fmt(panjang)} m\n• Lebar: {fmt(lebar)} m\n• Tinggi: {fmt(tinggi)} m\n• Jarak kuda-kuda: {fmt(jarak_kuda)} m\n\n🧮 PERHITUNGAN\n• Jumlah kuda-kuda: {jml_kuda}\n• Total kuda-kuda: {fmt(total_kuda)} m\n• Total gording: {fmt(total_gording)} m\n• Total reng: {fmt(total_reng)} m\n\n📊 RINGKASAN\n• Hollow 40x40x2: {fmt(total_kuda)} m ({batang_kuda} batang)\n• Hollow 20x20x1.5: {fmt(total_gording + total_reng)} m ({batang_gording + batang_reng} batang)\n• Luas atap: {fmt(luas_atap)} m²\n• Total las: {fmt(total_las)} m\n• Elektroda: {fmt(elektroda)} kg\n• Berat total: {fmt(berat_kuda + berat_gording + berat_reng)} kg\n\n📝 CATATAN\nBeli 10-20% lebih untuk cadangan."
-
-
-def tenda_material(text):
-    dims = extract_dimensions(text)
-    if len(dims) < 2: return None
-    panjang, lebar = dims[0], dims[1]
-    tm = re.search(r"tinggi\s*(\d+(?:[.,]\d+)?)\s*m", t := text.lower())
-    tinggi = parse_number(tm.group(1)) if tm else 2.5
-    jarak_tiang = 2.0
-    jml_tiang_p = math.ceil(panjang / jarak_tiang) + 1
-    jml_tiang_l = math.ceil(lebar / jarak_tiang) + 1
-    jml_tiang = jml_tiang_p * 2 + jml_tiang_l * 2 - 4
-    total_tiang = jml_tiang * tinggi
-    keliling = 2 * (panjang + lebar)
-    total_atas = keliling
-    total_tengah = keliling
-    total_hollow = total_tiang + total_atas + total_tengah
-    berat_tiang = total_tiang * 2.4
-    berat_rangka = (total_atas + total_tengah) * 1.2
-    total_las = total_hollow / 2
-    elektroda = total_las * 0.6
-    luas_atap = panjang * lebar
-    batang_tiang = math.ceil(total_tiang / 6)
-    batang_rangka = math.ceil((total_atas + total_tengah) / 6)
-    return f"🔧 KEBUTUHAN MATERIAL TENDA\n\n📋 DATA\n• Panjang: {fmt(panjang)} m\n• Lebar: {fmt(lebar)} m\n• Tinggi: {fmt(tinggi)} m\n• Jarak tiang: {fmt(jarak_tiang)} m\n\n🧮 PERHITUNGAN\n• Jumlah tiang: {jml_tiang}\n• Total tiang: {fmt(total_tiang)} m\n• Total rangka atas: {fmt(total_atas)} m\n• Total rangka tengah: {fmt(total_tengah)} m\n\n📊 RINGKASAN\n• Hollow 40x40x2: {fmt(total_tiang)} m ({batang_tiang} batang)\n• Hollow 20x20x1.5: {fmt(total_atas + total_tengah)} m ({batang_rangka} batang)\n• Luas atap: {fmt(luas_atap)} m²\n• Total las: {fmt(total_las)} m\n• Elektroda: {fmt(elektroda)} kg\n• Berat total: {fmt(berat_tiang + berat_rangka)} kg\n\n📝 CATATAN\nBeli 10-20% lebih untuk cadangan."
-
-
-def rangka_atap_material(text):
-    dims = extract_dimensions(text)
-    if len(dims) < 2: return None
-    panjang, lebar = dims[0], dims[1]
-    jarak_kuda = 1.2
-    jml_kuda = math.ceil(panjang / jarak_kuda) + 1
-    total_kuda = jml_kuda * (lebar + 0.5)
-    total_gording = panjang * 3
-    jml_reng = math.ceil(panjang / 0.5)
-    total_reng = jml_reng * lebar
-    total_hollow = total_kuda + total_gording + total_reng
-    berat_kuda = total_kuda * 2.4
-    berat_gording = total_gording * 1.2
-    berat_reng = total_reng * 1.2
-    total_las = total_hollow / 2
-    elektroda = total_las * 0.6
-    batang_kuda = math.ceil(total_kuda / 6)
-    batang_gording = math.ceil(total_gording / 6)
-    batang_reng = math.ceil(total_reng / 6)
-    return f"🔧 KEBUTUHAN MATERIAL RANGKA ATAP\n\n📋 DATA\n• Panjang: {fmt(panjang)} m\n• Lebar: {fmt(lebar)} m\n• Jarak kuda-kuda: {fmt(jarak_kuda)} m\n\n🧮 PERHITUNGAN\n• Jumlah kuda-kuda: {jml_kuda}\n• Total kuda-kuda: {fmt(total_kuda)} m\n• Total gording: {fmt(total_gording)} m\n• Total reng: {fmt(total_reng)} m\n\n📊 RINGKASAN\n• Hollow 40x40x2: {fmt(total_kuda)} m ({batang_kuda} batang)\n• Hollow 20x20x1.5: {fmt(total_gording + total_reng)} m ({batang_gording + batang_reng} batang)\n• Total las: {fmt(total_las)} m\n• Elektroda: {fmt(elektroda)} kg\n• Berat total: {fmt(berat_kuda + berat_gording + berat_reng)} kg\n\n📝 CATATAN\nBeli 10-20% lebih untuk cadangan."
-
-
-def tangga_material(text):
-    tm = re.search(r"tinggi\s*(\d+(?:[.,]\d+)?)\s*m", t := text.lower())
-    if not tm:
-        angka = re.search(r"(\d+(?:[.,]\d+)?)", t)
-        if not angka: return None
-        tinggi = parse_number(angka.group(1))
-    else: tinggi = parse_number(tm.group(1))
-    lebar = 1.0
-    tinggi_anak = 0.18
-    lebar_anak = 0.3
-    jml_anak = math.ceil(tinggi / tinggi_anak)
-    panjang_stringer = math.sqrt(tinggi**2 + (jml_anak * lebar_anak)**2)
-    total_stringer = 2 * panjang_stringer
-    total_handrail = 2 * panjang_stringer
-    total_hollow = total_stringer + total_handrail
-    berat_stringer = total_stringer * 2.4
-    berat_handrail = total_handrail * 1.2
-    luas_plat = jml_anak * lebar * lebar_anak
-    total_las = total_hollow / 2 + jml_anak * lebar
-    elektroda = total_las * 0.6
-    batang_stringer = math.ceil(total_stringer / 6)
-    batang_handrail = math.ceil(total_handrail / 6)
-    return f"🔧 KEBUTUHAN MATERIAL TANGGA\n\n📋 DATA\n• Tinggi: {fmt(tinggi)} m\n• Lebar: {fmt(lebar)} m\n• Tinggi anak: {fmt(tinggi_anak)} m\n• Lebar anak: {fmt(lebar_anak)} m\n\n🧮 PERHITUNGAN\n• Jumlah anak tangga: {jml_anak}\n• Panjang stringer: {fmt(panjang_stringer)} m\n• Total stringer: {fmt(total_stringer)} m\n• Total handrail: {fmt(total_handrail)} m\n\n📊 RINGKASAN\n• Hollow 40x40x2: {fmt(total_stringer)} m ({batang_stringer} batang)\n• Hollow 40x40x2 (handrail): {fmt(total_handrail)} m ({batang_handrail} batang)\n• Plat 3mm: {fmt(luas_plat)} m² ({fmt(luas_plat * 23.55)} kg)\n• Total las: {fmt(total_las)} m\n• Elektroda: {fmt(elektroda)} kg\n• Berat total: {fmt(berat_stringer + berat_handrail)} kg\n\n📝 CATATAN\nBeli 10-20% lebih untuk cadangan."
-
-
-def rak_material(text):
-    dims = extract_dimensions(text)
-    if len(dims) < 3: return None
-    panjang, lebar, tinggi = dims[0], dims[1], dims[2]
-    jml_tiang = 4
-    jml_tingkat = 3
-    total_tiang = jml_tiang * tinggi
-    total_horiz = (panjang * 2 + lebar * 2) * jml_tingkat
-    total_hollow = total_tiang + total_horiz
-    berat_tiang = total_tiang * 2.4
-    berat_horiz = total_horiz * 1.2
-    luas_plat = panjang * lebar * jml_tingkat
-    total_las = total_hollow / 2
-    elektroda = total_las * 0.6
-    batang_tiang = math.ceil(total_tiang / 6)
-    batang_horiz = math.ceil(total_horiz / 6)
-    return f"🔧 KEBUTUHAN MATERIAL RAK GUDANG\n\n📋 DATA\n• Panjang: {fmt(panjang)} m\n• Lebar: {fmt(lebar)} m\n• Tinggi: {fmt(tinggi)} m\n• Jumlah tingkat: {jml_tingkat}\n\n🧮 PERHITUNGAN\n• Jumlah tiang: {jml_tiang}\n• Total tiang: {fmt(total_tiang)} m\n• Total horizontal: {fmt(total_horiz)} m\n\n📊 RINGKASAN\n• Hollow 40x40x2: {fmt(total_tiang)} m ({batang_tiang} batang)\n• Hollow 20x20x1.5: {fmt(total_horiz)} m ({batang_horiz} batang)\n• Plat 3mm: {fmt(luas_plat)} m² ({fmt(luas_plat * 23.55)} kg)\n• Total las: {fmt(total_las)} m\n• Elektroda: {fmt(elektroda)} kg\n• Berat total: {fmt(berat_tiang + berat_horiz)} kg\n\n📝 CATATAN\nBeli 10-20% lebih untuk cadangan."
-
-
-def pintu_material(text):
-    dims = extract_dimensions(text)
-    if len(dims) < 2: return None
-    lebar, tinggi = dims[0], dims[1]
-    total_rangka = 2 * (lebar + tinggi)
-    total_panel = 3 * lebar
-    total_hollow = total_rangka + total_panel
-    berat_rangka = total_rangka * 2.4
-    berat_panel = total_panel * 1.2
-    luas_plat = lebar * tinggi
-    total_las = total_hollow / 2 + lebar * 2
-    elektroda = total_las * 0.6
-    batang_rangka = math.ceil(total_rangka / 6)
-    batang_panel = math.ceil(total_panel / 6)
-    return f"🔧 KEBUTUHAN MATERIAL PINTU BESI\n\n📋 DATA\n• Lebar: {fmt(lebar)} m\n• Tinggi: {fmt(tinggi)} m\n\n🧮 PERHITUNGAN\n• Total rangka: {fmt(total_rangka)} m\n• Total panel: {fmt(total_panel)} m\n\n📊 RINGKASAN\n• Hollow 40x40x2: {fmt(total_rangka)} m ({batang_rangka} batang)\n• Hollow 20x20x1.5: {fmt(total_panel)} m ({batang_panel} batang)\n• Plat 1.5mm: {fmt(luas_plat)} m² ({fmt(luas_plat * 11.78)} kg)\n• Total las: {fmt(total_las)} m\n• Elektroda: {fmt(elektroda)} kg\n• Berat total: {fmt(berat_rangka + berat_panel)} kg\n\n📝 CATATAN\nBeli 10-20% lebih untuk cadangan."
-
-
-def material_calculator(text):
-    t = text.lower().strip()
-    if "pagar" in t: return pagar_material(text)
-    if "kanopi" in t: return kanopi_material(text)
-    if "tenda" in t: return tenda_material(text)
-    if "rangka atap" in t or "rangka" in t: return rangka_atap_material(text)
-    if "tangga" in t: return tangga_material(text)
-    if "rak" in t or "rak gudang" in t: return rak_material(text)
-    if "pintu" in t or "pintu besi" in t: return pintu_material(text)
-    return None
-
-
-# ============================================================
-# MATERIAL SPESIFIK (PAGAR DETAIL, BAJA RINGAN, BALKON, MEZANIN)
-# ============================================================
-
-def pagar_spesifik(text):
-    t = text.lower()
-    dims = extract_dimensions(text)
-    if len(dims) < 2: return None
-    lebar = dims[0]
-    panjang = dims[1]
-    hollow_utama = "4x4"
-    hu_w, hu_h = 4, 4
-    hm = re.search(r"(?:hollow|rangka|tiang)\s*(\d+)x(\d+)", t)
-    if hm:
-        hollow_utama = f"{hm.group(1)}x{hm.group(2)}"
-        hu_w, hu_h = int(hm.group(1)), int(hm.group(2))
-    hollow_kisi = "2x4"
-    hk_w, hk_h = 2, 4
-    km = re.search(r"(?:kisi|vertikal)\s*(\d+)x(\d+)", t)
-    if km:
-        hollow_kisi = f"{km.group(1)}x{km.group(2)}"
-        hk_w, hk_h = int(km.group(1)), int(km.group(2))
-    jarak_kisi = 0.08
-    jm = re.search(r"jarak\s*(\d+(?:[.,]\d+)?)\s*cm", t)
-    if jm:
-        jarak_kisi = parse_number(jm.group(1)) / 100
-    jarak_tiang = 2.0
-    tm = re.search(r"jarak tiang\s*(\d+(?:[.,]\d+)?)\s*m", t)
-    if tm:
-        jarak_tiang = parse_number(tm.group(1))
-    tinggi = lebar
-    jml_tiang = math.ceil(panjang / jarak_tiang) + 1
-    total_tiang = jml_tiang * tinggi
-    total_horizontal = panjang * 2
-    jml_kisi = math.ceil(panjang / jarak_kisi)
-    total_kisi = jml_kisi * tinggi
-    total_hollow_utama = total_tiang + total_horizontal
-    total_hollow_kisi = total_kisi
-    if hu_w <= 4 and hu_h <= 4: berat_utama_per_m = 2.4
-    elif hu_w <= 6 and hu_h <= 6: berat_utama_per_m = 3.5
-    else: berat_utama_per_m = 4.5
-    if hk_w <= 2 and hk_h <= 4: berat_kisi_per_m = 1.2
-    elif hk_w <= 3 and hk_h <= 4: berat_kisi_per_m = 1.5
-    else: berat_kisi_per_m = 2.0
-    berat_utama = total_hollow_utama * berat_utama_per_m
-    berat_kisi = total_hollow_kisi * berat_kisi_per_m
-    total_berat = berat_utama + berat_kisi
-    total_las = (total_hollow_utama + total_hollow_kisi) / 2
-    elektroda = total_las * 0.6
-    jml_batang_utama = math.ceil(total_hollow_utama / 6)
-    jml_batang_kisi = math.ceil(total_hollow_kisi / 6)
-    total_batang = jml_batang_utama + jml_batang_kisi
-    return f"🔧 KEBUTUHAN MATERIAL PAGAR SPESIFIK\n\n📋 DATA\n• Tinggi: {fmt(tinggi)} m\n• Panjang: {fmt(panjang)} m\n• Rangka utama: Hollow {hollow_utama} mm\n• Kisi-kisi: Hollow {hollow_kisi} mm\n• Jarak kisi: {fmt(jarak_kisi*100)} cm\n• Jarak tiang: {fmt(jarak_tiang)} m\n\n🧮 PERHITUNGAN\n• Jumlah tiang: {jml_tiang}\n• Total rangka utama: {fmt(total_hollow_utama)} m\n• Total kisi-kisi: {fmt(total_hollow_kisi)} m\n\n📊 RINGKASAN\n• Hollow {hollow_utama}: {fmt(total_hollow_utama)} m ({jml_batang_utama} batang)\n• Hollow {hollow_kisi}: {fmt(total_hollow_kisi)} m ({jml_batang_kisi} batang)\n• Total las: {fmt(total_las)} m\n• Elektroda: {fmt(elektroda)} kg\n• Berat total: {fmt(total_berat)} kg\n• Total batang 6m: {total_batang} batang\n\n📝 CATATAN\nBeli 10-20% lebih untuk cadangan."
-
-
-def baja_ringan_material(text):
-    t = text.lower()
-    dims = extract_dimensions(text)
-    if len(dims) < 2: return None
-    panjang = dims[0]
-    lebar = dims[1]
-    jenis_atap = "genteng metal"
-    if "genteng keramik" in t or "keramik" in t: jenis_atap = "genteng keramik"
-    elif "spandek" in t or "metal" in t: jenis_atap = "spandek"
-    elif "asbes" in t: jenis_atap = "asbes"
-    kemiringan = 30
-    km = re.search(r"kemiringan\s*(\d+(?:[.,]\d+)?)\s*derajat", t)
-    if km: kemiringan = parse_number(km.group(1))
-    jarak_kuda = 1.2
-    jkm = re.search(r"jarak kuda\s*(\d+(?:[.,]\d+)?)\s*m", t)
-    if jkm: jarak_kuda = parse_number(jkm.group(1))
-    luas_datar = panjang * lebar
-    faktor_miring = 1 / math.cos(math.radians(kemiringan))
-    luas_miring = luas_datar * faktor_miring
-    jml_kuda = math.ceil(panjang / jarak_kuda) + 1
-    total_kuda = jml_kuda * lebar
-    total_gording = panjang * 3
-    jml_reng = math.ceil(panjang / 0.5)
-    total_reng = jml_reng * lebar
-    if jenis_atap == "genteng metal": genteng_per_m2 = 2.5
-    elif jenis_atap == "genteng keramik": genteng_per_m2 = 12
-    else: genteng_per_m2 = 1.2
-    jml_genteng = math.ceil(luas_miring * genteng_per_m2)
-    jml_sekrup = math.ceil(luas_miring * 8)
-    jml_baut = jml_kuda * 4
-    berat_rangka = (total_kuda + total_gording + total_reng) * 1.5
-    return f"🔧 KEBUTUHAN MATERIAL BAJA RINGAN\n\n📋 DATA\n• Panjang: {fmt(panjang)} m\n• Lebar: {fmt(lebar)} m\n• Jenis atap: {jenis_atap.title()}\n• Kemiringan: {fmt(kemiringan)} derajat\n• Jarak kuda-kuda: {fmt(jarak_kuda)} m\n\n🧮 PERHITUNGAN\n• Luas atap miring: {fmt(luas_miring)} m²\n• Jumlah kuda-kuda: {jml_kuda}\n• Total kuda-kuda: {fmt(total_kuda)} m\n• Total gording: {fmt(total_gording)} m\n• Total reng: {fmt(total_reng)} m\n\n📊 RINGKASAN\n• Total rangka: {fmt(total_kuda + total_gording + total_reng)} m\n• Berat rangka: {fmt(berat_rangka)} kg\n• Atap {jenis_atap.title()}: {jml_genteng} lembar/buah\n• Sekrup: {jml_sekrup} pcs\n• Baut: {jml_baut} pcs\n\n📝 CATATAN\nBeli 10-20% lebih untuk cadangan."
-
-
-def balkon_material(text):
-    t = text.lower()
-    dims = extract_dimensions(text)
-    if len(dims) < 2: return None
-    panjang = dims[0]
-    lebar = dims[1]
-    besi = "10mm"
-    dia = 10
-    bm = re.search(r"besi\s*(\d+)mm", t)
-    if bm: besi = f"{bm.group(1)}mm"; dia = int(bm.group(1))
-    plat = "plat bordes"
-    if "wiremesh" in t or "mesh" in t: plat = "wiremesh"
-    elif "komposit" in t or "deck" in t: plat = "komposit deck"
-    elif "beton" in t: plat = "plat beton"
-    luas_plat = panjang * lebar
-    jml_besi_panjang = math.ceil(lebar / 0.15)
-    total_besi_panjang = jml_besi_panjang * panjang
-    jml_besi_lebar = math.ceil(panjang / 0.15)
-    total_besi_lebar = jml_besi_lebar * lebar
-    total_besi = total_besi_panjang + total_besi_lebar
-    berat_per_m = dia**2 / 162
-    berat_besi = total_besi * berat_per_m
-    jml_batang = math.ceil(total_besi / 12)
-    tinggi_railing = 1.0
-    tm = re.search(r"tinggi railing\s*(\d+(?:[.,]\d+)?)\s*m", t)
-    if tm: tinggi_railing = parse_number(tm.group(1))
-    total_railing = (panjang * 2) * tinggi_railing
-    return f"🔧 KEBUTUHAN MATERIAL BALKON\n\n📋 DATA\n• Panjang: {fmt(panjang)} m\n• Lebar: {fmt(lebar)} m\n• Besi tulangan: {besi}\n• Jenis plat: {plat.title()}\n• Tinggi railing: {fmt(tinggi_railing)} m\n\n🧮 PERHITUNGAN\n• Luas plat: {fmt(luas_plat)} m²\n• Total besi: {fmt(total_besi)} m\n• Berat besi: {fmt(berat_besi)} kg\n• Batang 12m: {jml_batang}\n\n📊 RINGKASAN\n• Plat {plat.title()}: {fmt(luas_plat)} m²\n• Besi {besi}: {fmt(total_besi)} m ({jml_batang} batang)\n• Railing: {fmt(total_railing)} m\n• Berat total: {fmt(berat_besi)} kg\n\n📝 CATATAN\nBeli 10-20% lebih untuk cadangan.\n⚠️ Desain struktur harus diverifikasi engineer."
-
-
-def mezanin_material(text):
-    t = text.lower()
-    dims = extract_dimensions(text)
-    if len(dims) < 3: return None
-    panjang = dims[0]
-    lebar = dims[1]
-    tinggi = dims[2]
-    besi = "12mm"
-    dia = 12
-    bm = re.search(r"besi\s*(\d+)mm", t)
-    if bm: besi = f"{bm.group(1)}mm"; dia = int(bm.group(1))
-    plat = "wiremesh"
-    if "plat bordes" in t or "bordes" in t: plat = "plat bordes"
-    elif "komposit" in t or "deck" in t: plat = "komposit deck"
-    elif "beton" in t: plat = "plat beton"
-    luas_plat = panjang * lebar
-    jml_balok_utama = math.ceil(lebar / 1.5) + 1
-    total_balok_utama = jml_balok_utama * panjang
-    jml_balok_sekunder = math.ceil(panjang / 1.2) + 1
-    total_balok_sekunder = jml_balok_sekunder * lebar
-    jml_kolom = 4
-    total_kolom = jml_kolom * tinggi
-    total_rangka = total_balok_utama + total_balok_sekunder + total_kolom
-    berat_rangka = total_rangka * 7
-    if plat == "plat beton":
-        jml_besi_panjang = math.ceil(lebar / 0.15)
-        total_besi_panjang = jml_besi_panjang * panjang
-        jml_besi_lebar = math.ceil(panjang / 0.15)
-        total_besi_lebar = jml_besi_lebar * lebar
-        total_besi = total_besi_panjang + total_besi_lebar
-        berat_per_m = dia**2 / 162
-        berat_besi = total_besi * berat_per_m
-        jml_batang = math.ceil(total_besi / 12)
-    else:
-        total_besi = 0
-        berat_besi = 0
-        jml_batang = 0
-    jml_anak_tangga = math.ceil(tinggi / 0.18)
-    total_railing = (panjang * 2 + lebar) * 1.0
-    return f"🔧 KEBUTUHAN MATERIAL MEZANIN\n\n📋 DATA\n• Panjang: {fmt(panjang)} m\n• Lebar: {fmt(lebar)} m\n• Tinggi: {fmt(tinggi)} m\n• Besi: {besi}\n• Jenis plat: {plat.title()}\n\n🧮 PERHITUNGAN\n• Luas plat: {fmt(luas_plat)} m²\n• Total rangka: {fmt(total_rangka)} m\n• Berat rangka: {fmt(berat_rangka)} kg\n• Total besi: {fmt(total_besi)} m\n• Berat besi: {fmt(berat_besi)} kg\n• Tangga: {jml_anak_tangga} anak tangga\n• Railing: {fmt(total_railing)} m\n\n📊 RINGKASAN\n• Plat {plat.title()}: {fmt(luas_plat)} m²\n• Rangka: {fmt(total_rangka)} m\n• Besi {besi}: {fmt(total_besi)} m ({jml_batang} batang)\n• Berat total: {fmt(berat_rangka + berat_besi)} kg\n\n📝 CATATAN\nBeli 10-20% lebih untuk cadangan.\n⚠️ Desain struktur harus diverifikasi engineer."
-
-
-def material_spesifik_calculator(text):
-    t = text.lower().strip()
-    if "pagar" in t and ("hollow" in t or "kisi" in t or "jarak" in t): return pagar_spesifik(text)
-    if "baja ringan" in t or "rangka atap" in t or "atap" in t: return baja_ringan_material(text)
-    if "balkon" in t: return balkon_material(text)
-    if "mezanin" in t or "mezzanine" in t: return mezanin_material(text)
-    return None
 def technical_calculator(text):
     t = text.lower().strip()
     if "hollow" in t or "kotak" in t:
@@ -769,6 +295,7 @@ def technical_calculator(text):
         r = converter(text)
         if r: return r
     return None
+
 # ============================================================
 # CIVIL CALCULATOR
 # ============================================================
@@ -785,7 +312,6 @@ def concrete_materials(volume, mix=(1,2,3), dry_factor=1.54, cement_density=1440
     water_liter = cement_kg * wc
     return {"volume": volume, "cement_kg": cement_kg, "cement_sacks": cement_sacks, "sand_m3": sand_volume, "gravel_m3": gravel_volume, "water_liter": water_liter}
 
-
 def civil_concrete(text, title="KEBUTUHAN BETON"):
     dims = extract_dimensions(text)
     if len(dims) != 3: return None
@@ -793,7 +319,6 @@ def civil_concrete(text, title="KEBUTUHAN BETON"):
     volume = p*l*t
     r = concrete_materials(volume)
     return f"🏗️ {title}\n\n📋 DATA\n• Panjang: {fmt(p)} m\n• Lebar: {fmt(l)} m\n• Tebal: {fmt(t)} m\n• Volume: {fmt(volume)} m³\n\n⚙️ ASUMSI\n• Campuran 1:2:3, faktor kering 1.54\n• Semen 1440 kg/m³, 1 zak = 50 kg\n\n🧮 PERHITUNGAN\n• Semen: {r['cement_sacks']} zak ({fmt(r['cement_kg'])} kg)\n• Pasir: {fmt(r['sand_m3'])} m³\n• Kerikil: {fmt(r['gravel_m3'])} m³\n• Air: {fmt(r['water_liter'])} liter\n\n📝 CATATAN\nHasil estimasi, bukan mix design laboratorium. Verifikasi engineer untuk struktur penting."
-
 
 def civil_wall(text):
     dims = extract_dimensions(text)
@@ -808,7 +333,6 @@ def civil_wall(text):
     sacks = math.ceil(cement_kg / 50)
     sand = dry * 4/5
     return f"🏗️ KEBUTUHAN DINDING\n\n📋 DATA\n• Panjang: {fmt(p)} m\n• Tinggi: {fmt(l)} m\n• Luas: {fmt(area)} m²\n• Material: {material}\n\n🧮 PERHITUNGAN\n• {material}: {pcs} buah\n• Mortar: {fmt(mortar)} m³\n• Semen: {sacks} zak ({fmt(cement_kg)} kg)\n• Pasir: {fmt(sand)} m³\n\n📝 CATATAN\nEstimasi, tergantung ukuran material & metode pemasangan."
-
 
 def civil_rebar(text):
     t = text.lower()
@@ -830,7 +354,6 @@ def civil_rebar(text):
     total = panjang*wpm
     if not jml: jml = math.ceil(panjang/std)
     return f"🔩 KEBUTUHAN BESI\n\n📋 DATA\n• Diameter: D{fmt(dia)} mm\n• Panjang total: {fmt(panjang)} m\n• Batang standar: {fmt(std)} m\n• Jumlah batang: {jml}\n\n🧮 PERHITUNGAN\n• Berat per meter: {fmt(wpm)} kg/m\n• Berat total: {fmt(total)} kg\n\n📝 CATATAN\nBukan desain tulangan struktur. Verifikasi engineer diperlukan."
-
 
 def civil_calculator(text):
     t = text.lower().strip()
@@ -930,6 +453,92 @@ def civil_calculator(text):
         if r: return r
     return None
 
+# ============================================================
+# TASK CLASSIFIER
+# ============================================================
+
+def classify_task(text):
+    t = (text or "").lower()
+    coding = ["python", "javascript", "typescript", "php", "html", "css", "sql", "api", "coding", "kode", "program", "programming", "bug", "error", "debug", "github", "vercel", "function", "import ", "async ", "def "]
+    civil = ["sipil", "beton", "cor", "coran", "pondasi", "footplat", "sloof", "kolom", "balok", "plat beton", "plat lantai", "dinding", "tembok", "bata", "batako", "plester", "acian", "galian", "urugan", "besi", "besi tulangan", "tulangan", "begel", "bendrat", "berat besi", "diameter besi"]
+    technical = ["tenda", "kanopi", "rangka", "hollow", "pipa", "baja", "las", "fabrikasi", "manufaktur", "produksi", "material", "plat", "besi", "aluminium", "konstruksi", "ukuran", "dimensi", "pagar", "bengkel", "welding", "engineering", "cutting list", "potongan batang", "batang 6 meter", "rangka utama", "rangka sekunder", "purlin", "pengaku", "tiang", "balok utama", "sambungan", "elektroda", "kawat las", "berat hollow", "berat pipa", "berat plat"]
+    reasoning = ["analisis", "analisa", "kenapa", "mengapa", "bandingkan", "perbandingan", "strategi", "logika", "alasan", "evaluasi", "pecahkan", "solusi terbaik", "reasoning"]
+    math_keywords = ["hitung", "perhitungan", "berapa", "rumus", "luas", "volume", "persentase", "matematika", "kg", "meter", "mm", "cm", "m2", "m²"]
+    creative = ["caption", "iklan", "promosi", "slogan", "desain", "buatkan gambar", "ide konten", "copywriting"]
+    if any(x in t for x in coding): return "coding"
+    if any(x in t for x in civil): return "civil"
+    if any(x in t for x in technical): return "technical"
+    if any(x in t for x in reasoning): return "reasoning"
+    if any(x in t for x in math_keywords): return "math"
+    if any(x in t for x in creative): return "creative"
+    return "general"
+
+# ============================================================
+# AI CALLS
+# ============================================================
+
+def call_gemini(uid, text, task):
+    if not gemini: raise RuntimeError("GEMINI_API_KEY belum tersedia.")
+    task_hint = {"coding": "Berikan kode yang dapat dijalankan.", "reasoning": "Analisis masalah secara teliti sebelum kesimpulan.", "technical": "Gunakan pertimbangan teknik dan manufaktur yang praktis.", "civil": "Gunakan perhitungan sipil secara teliti. Jangan mengarang data. Jika data belum diberikan, nyatakan data belum ditentukan. Bedakan estimasi material dengan desain struktur. Untuk struktur jangan menyatakan aman tanpa perhitungan engineering.", "math": "Hitung secara teliti dan tunjukkan asumsi.", "creative": "Buat hasil kreatif yang siap digunakan.", "general": "Jawab langsung dan jelas."}.get(task, "")
+    prompt = SYSTEM + "\n\n" + task_hint + "\n\n"
+    for m in _trim_history_for_context(uid): prompt += f"{m['role']}: {m['content']}\n"
+    prompt += f"user: {text}"
+    r = gemini.models.generate_content(model=GEMINI_CHAT_MODEL, contents=prompt)
+    answer = r.text or ""
+    if not answer.strip(): raise RuntimeError("Gemini mengembalikan jawaban kosong.")
+    return answer, GEMINI_CHAT_MODEL
+
+def call_groq(uid, text, task, model=None):
+    if not groq: raise RuntimeError("GROQ_API_KEY belum tersedia.")
+    if not model:
+        if task == "coding": model = GROQ_CODING_MODEL
+        elif task in ("reasoning", "math"): model = GROQ_REASONING_MODEL
+        else: model = GROQ_FAST_MODEL
+    r = groq.chat.completions.create(model=model, messages=build_messages(uid, text, task, max_turns=GROQ_MAX_CONTEXT_TURNS, max_chars_per_item=GROQ_MAX_CONTEXT_CHARS_PER_ITEM), max_tokens=GROQ_MAX_OUTPUT_TOKENS)
+    answer = r.choices[0].message.content or ""
+    if not answer.strip(): raise RuntimeError(f"Groq ({model}) mengembalikan jawaban kosong.")
+    return answer, model
+
+def call_openrouter(uid, text, task, model=None):
+    if not openrouter: raise RuntimeError("OPENROUTER_API_KEY belum tersedia.")
+    selected = model or OPENROUTER_FREE_MODEL
+    r = openrouter.chat.completions.create(model=selected, messages=build_messages(uid, text, task), max_tokens=OPENROUTER_MAX_OUTPUT_TOKENS, extra_headers={"HTTP-Referer": "https://designmanufaktur.vercel.app", "X-Title": "Designmanufaktur Super AI Agent"})
+    answer = r.choices[0].message.content or ""
+    if not answer.strip(): raise RuntimeError(f"OpenRouter ({selected}) mengembalikan jawaban kosong.")
+    selected_model = getattr(r, "model", None) or selected
+    return answer, selected_model
+
+def call_cloudflare_chat(uid, text, task, model=None):
+    if not cloudflare_text: raise RuntimeError("CLOUDFLARE_API_TOKEN belum tersedia.")
+    selected = model or CLOUDFLARE_TEXT_MODEL
+    r = cloudflare_text.chat.completions.create(model=selected, messages=build_messages(uid, text, task))
+    answer = r.choices[0].message.content or ""
+    if not answer.strip(): raise RuntimeError(f"Cloudflare ({selected}) mengembalikan jawaban kosong.")
+    return answer, selected
+
+def call_huggingface(uid, text, task, model=None):
+    if not huggingface: raise RuntimeError("HUGGINGFACE_API_KEY belum tersedia.")
+    selected = model or HUGGINGFACE_MODEL
+    r = huggingface.chat.completions.create(model=selected, messages=build_messages(uid, text, task))
+    answer = r.choices[0].message.content or ""
+    if not answer.strip(): raise RuntimeError(f"HuggingFace ({selected}) mengembalikan jawaban kosong.")
+    return answer, selected
+
+def _is_retryable_rate_limit(error_text):
+    t = error_text.lower()
+    if "per-day" in t or "per day" in t or "daily" in t: return False
+    if "429" in t or "rate limit" in t or "resource_exhausted" in t: return True
+    return False
+
+def _call_with_retry(fn, retries=1, base_delay=1.5):
+    last_err = None
+    for attempt in range(retries + 1):
+        try: return fn()
+        except Exception as e:
+            last_err = e
+            if attempt == retries or not _is_retryable_rate_limit(str(e)): raise
+            time.sleep(base_delay + random.uniform(0, 1.0))
+    raise last_err
 
 # ============================================================
 # CHAT ROUTER
@@ -939,23 +548,17 @@ def chat_router(uid, text):
     task = classify_task(text)
     log.info("TASK=%s | text=%s", task, text[:120])
     
-    # Material Spesifik
-    if task == "technical":
-        material_spesifik = material_spesifik_calculator(text)
-        if material_spesifik:
-            return (material_spesifik, "Spesifik Material Calculator", "Local Calculation Engine", task)
-        material_result = material_calculator(text)
-        if material_result:
-            return (material_result, "Material Calculator", "Local Calculation Engine", task)
-        tech_result = technical_calculator(text)
-        if tech_result:
-            return (tech_result, "Technical Calculator", "Local Calculation Engine", task)
-    
     # Civil Calculator
     if task == "civil":
         civil_result = civil_calculator(text)
         if civil_result:
             return (civil_result, "Civil Calculator", "Local Calculation Engine", task)
+    
+    # Technical Calculator
+    if task == "technical":
+        tech_result = technical_calculator(text)
+        if tech_result:
+            return (tech_result, "Technical Calculator", "Local Calculation Engine", task)
     
     # Provider Routing
     providers = []
@@ -980,80 +583,105 @@ def chat_router(uid, text):
             log.warning("PROVIDER FAILED | provider=%s | error=%s", provider_name, error_text[:300])
     raise RuntimeError("Semua provider AI GRATIS gagal. " + " | ".join(errors))
 
+# ============================================================
+# TELEGRAM API
+# ============================================================
+
+async def tg(method, data):
+    if not TELEGRAM_TOKEN: raise RuntimeError("TELEGRAM_TOKEN belum diatur.")
+    async with httpx.AsyncClient(timeout=180) as client:
+        r = await client.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}", json=data)
+        r.raise_for_status()
+        result = r.json()
+    if not result.get("ok"): raise RuntimeError(str(result))
+    return result
+
+async def tg_file(file_id):
+    result = await tg("getFile", {"file_id": file_id})
+    path = result["result"]["file_path"]
+    async with httpx.AsyncClient(timeout=180) as client:
+        r = await client.get(f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{path}")
+        r.raise_for_status()
+    return r.content, path
 
 # ============================================================
-# AI CALLS
+# SEND TEXT
 # ============================================================
 
-def call_gemini(uid, text, task):
-    if not gemini: raise RuntimeError("GEMINI_API_KEY belum tersedia.")
-    task_hint = {"coding": "Berikan kode yang dapat dijalankan.", "reasoning": "Analisis masalah secara teliti sebelum kesimpulan.", "technical": "Gunakan pertimbangan teknik dan manufaktur yang praktis.", "civil": "Gunakan perhitungan sipil secara teliti. Jangan mengarang data. Jika data belum diberikan, nyatakan data belum ditentukan. Bedakan estimasi material dengan desain struktur. Untuk struktur jangan menyatakan aman tanpa perhitungan engineering.", "math": "Hitung secara teliti dan tunjukkan asumsi.", "creative": "Buat hasil kreatif yang siap digunakan.", "general": "Jawab langsung dan jelas."}.get(task, "")
-    prompt = SYSTEM + "\n\n" + task_hint + "\n\n"
-    for m in _trim_history_for_context(uid): prompt += f"{m['role']}: {m['content']}\n"
-    prompt += f"user: {text}"
-    r = gemini.models.generate_content(model=GEMINI_CHAT_MODEL, contents=prompt)
-    answer = r.text or ""
-    if not answer.strip(): raise RuntimeError("Gemini mengembalikan jawaban kosong.")
-    return answer, GEMINI_CHAT_MODEL
+async def send_text(chat_id, text):
+    if not text:
+        return
+    text = str(text).replace("\r\n", "\n")
+    text = re.sub(r"```[a-zA-Z0-9_+\-]*\n?", "", text)
+    text = text.replace("```", "")
+    text = re.sub(r"^\s*#{1,6}\s*", "", text, flags=re.MULTILINE)
+    text = text.replace("**", "")
+    text = re.sub(r"(?<!\w)\*(?!\s)", "", text)
+    text = text.replace("__", "")
+    text = text.replace("`", "")
+    text = re.sub(r"^\s*[-_*]{3,}\s*$", "", text, flags=re.MULTILINE)
+    text = text.replace("DATA", "📋 DATA")
+    text = text.replace("ASUMSI", "⚙️ ASUMSI")
+    text = text.replace("PERHITUNGAN", "🧮 PERHITUNGAN")
+    text = text.replace("CUTTING LIST", "✂️ CUTTING LIST")
+    text = text.replace("VALIDASI", "🔍 VALIDASI")
+    text = text.replace("RINGKASAN", "📊 RINGKASAN")
+    text = text.replace("CATATAN", "📝 CATATAN")
+    text = text.replace("KESIMPULAN", "🎯 KESIMPULAN")
+    text = text.replace("TEKNIK LAS", "🔧 TEKNIK LAS")
+    text = text.replace("CIVIL CALCULATOR", "🏗️ CIVIL CALCULATOR")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    
+    chunks = []
+    current = ""
+    paragraphs = text.split("\n\n")
+    for paragraph in paragraphs:
+        paragraph = paragraph.strip()
+        if not paragraph: continue
+        candidate = current + ("\n\n" if current else "") + paragraph
+        if len(candidate) <= 3900:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current.strip())
+                current = ""
+            lines = paragraph.split("\n")
+            for line in lines:
+                line = line.strip()
+                if not line: continue
+                candidate = current + ("\n" if current else "") + line
+                if len(candidate) <= 3900:
+                    current = candidate
+                else:
+                    if current:
+                        chunks.append(current.strip())
+                        current = ""
+                    while len(line) > 3900:
+                        chunks.append(line[:3900])
+                        line = line[3900:]
+                    current = line
+    if current:
+        chunks.append(current.strip())
+    
+    for chunk in chunks:
+        await tg("sendMessage", {"chat_id": chat_id, "text": chunk})
+        if len(chunks) > 1:
+            await asyncio.sleep(0.25)
 
+# ============================================================
+# SEND PHOTO / VIDEO
+# ============================================================
 
-def call_groq(uid, text, task, model=None):
-    if not groq: raise RuntimeError("GROQ_API_KEY belum tersedia.")
-    if not model:
-        if task == "coding": model = GROQ_CODING_MODEL
-        elif task in ("reasoning", "math"): model = GROQ_REASONING_MODEL
-        else: model = GROQ_FAST_MODEL
-    r = groq.chat.completions.create(model=model, messages=build_messages(uid, text, task, max_turns=GROQ_MAX_CONTEXT_TURNS, max_chars_per_item=GROQ_MAX_CONTEXT_CHARS_PER_ITEM), max_tokens=GROQ_MAX_OUTPUT_TOKENS)
-    answer = r.choices[0].message.content or ""
-    if not answer.strip(): raise RuntimeError(f"Groq ({model}) mengembalikan jawaban kosong.")
-    return answer, model
+async def send_photo(chat_id, data, filename="image.png", content_type="image/png"):
+    async with httpx.AsyncClient(timeout=180) as client:
+        r = await client.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto", data={"chat_id": str(chat_id)}, files={"photo": (filename, data, content_type)})
+        r.raise_for_status()
 
-
-def call_openrouter(uid, text, task, model=None):
-    if not openrouter: raise RuntimeError("OPENROUTER_API_KEY belum tersedia.")
-    selected = model or OPENROUTER_FREE_MODEL
-    r = openrouter.chat.completions.create(model=selected, messages=build_messages(uid, text, task), max_tokens=OPENROUTER_MAX_OUTPUT_TOKENS, extra_headers={"HTTP-Referer": "https://designmanufaktur.vercel.app", "X-Title": "Designmanufaktur Super AI Agent"})
-    answer = r.choices[0].message.content or ""
-    if not answer.strip(): raise RuntimeError(f"OpenRouter ({selected}) mengembalikan jawaban kosong.")
-    selected_model = getattr(r, "model", None) or selected
-    return answer, selected_model
-
-
-def call_cloudflare_chat(uid, text, task, model=None):
-    if not cloudflare_text: raise RuntimeError("CLOUDFLARE_API_TOKEN belum tersedia.")
-    selected = model or CLOUDFLARE_TEXT_MODEL
-    r = cloudflare_text.chat.completions.create(model=selected, messages=build_messages(uid, text, task))
-    answer = r.choices[0].message.content or ""
-    if not answer.strip(): raise RuntimeError(f"Cloudflare ({selected}) mengembalikan jawaban kosong.")
-    return answer, selected
-
-
-def call_huggingface(uid, text, task, model=None):
-    if not huggingface: raise RuntimeError("HUGGINGFACE_API_KEY belum tersedia.")
-    selected = model or HUGGINGFACE_MODEL
-    r = huggingface.chat.completions.create(model=selected, messages=build_messages(uid, text, task))
-    answer = r.choices[0].message.content or ""
-    if not answer.strip(): raise RuntimeError(f"HuggingFace ({selected}) mengembalikan jawaban kosong.")
-    return answer, selected
-
-
-def _is_retryable_rate_limit(error_text):
-    t = error_text.lower()
-    if "per-day" in t or "per day" in t or "daily" in t: return False
-    if "429" in t or "rate limit" in t or "resource_exhausted" in t: return True
-    return False
-
-
-def _call_with_retry(fn, retries=1, base_delay=1.5):
-    last_err = None
-    for attempt in range(retries + 1):
-        try: return fn()
-        except Exception as e:
-            last_err = e
-            if attempt == retries or not _is_retryable_rate_limit(str(e)): raise
-            time.sleep(base_delay + random.uniform(0, 1.0))
-    raise last_err
-
+async def send_video(chat_id, data):
+    async with httpx.AsyncClient(timeout=300) as client:
+        r = await client.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo", data={"chat_id": str(chat_id)}, files={"video": ("video.mp4", data, "video/mp4")})
+        r.raise_for_status()
 
 # ============================================================
 # HANDLE UPDATE
@@ -1068,7 +696,7 @@ async def handle(update):
     caption = message.get("caption", "") or ""
     
     if text.startswith("/start"):
-        await send_text(chat_id, "🤖 Designmanufaktur Super AI Agent aktif.\n\n🧠 Smart Multi-AI Router\n🏗️ Civil Calculator\n🔧 Teknik Las Calculator\n📐 Material Calculator (Pagar, Kanopi, Tenda, Rangka Atap, Tangga, Rak, Pintu)\n🔩 Baja Ringan, Balkon, Mezanin\n🖼️ Gemini Vision\n🎨 Free Image Generation\n\nContoh:\n• sipil beton 5 x 10 meter tebal 10 cm\n• berat hollow 40x40x2 mm panjang 6 meter\n• pagar 10 meter tinggi 1.5 meter\n• kanopi 5x3 meter\n\nPerintah:\n/model\n/reset\n/gambar <prompt>\n\n⚠️ Untuk struktur: hasil material bukan pengganti desain engineer.")
+        await send_text(chat_id, "🤖 Designmanufaktur Super AI Agent aktif.\n\n🧠 Smart Multi-AI Router\n🏗️ Civil Calculator\n🔧 Teknik Las Calculator\n🖼️ Gemini Vision\n🎨 Free Image Generation\n\nContoh:\n• sipil beton 5 x 10 meter tebal 10 cm\n• berat hollow 40x40x2 mm panjang 6 meter\n• pagar 10 meter tinggi 1.5 meter\n\nPerintah:\n/model\n/reset\n/gambar <prompt>\n\n⚠️ Untuk struktur: hasil material bukan pengganti desain engineer.")
         return
     
     if text.startswith("/reset"):
@@ -1134,7 +762,6 @@ async def handle(update):
     except Exception as e:
         log.exception("chat failed")
         await send_text(chat_id, "❌ Semua AI GRATIS gagal untuk request ini.\n\n" + str(e)[:700])
-
 
 # ============================================================
 # IMAGE GENERATION
