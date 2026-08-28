@@ -2344,7 +2344,7 @@ jangan menyatakan aman tanpa perhitungan engineering.
 # NVIDIA NIM / DEEPSEEK V4 FLASH
 # ============================================================
 
-def call_nvidia(uid, text, task, reasoning_effort=None):
+def call_nvidia(uid, text, task, reasoning_effort=None, model=None):
 
     if not nvidia:
         raise RuntimeError("NVIDIA_API_KEY belum tersedia.")
@@ -2362,7 +2362,7 @@ def call_nvidia(uid, text, task, reasoning_effort=None):
         }.get(task, "none")
 
     r = nvidia.chat.completions.create(
-        model=NVIDIA_MODEL,
+        model=(model or NVIDIA_MODEL),
         messages=build_messages(
             uid,
             text,
@@ -2386,10 +2386,10 @@ def call_nvidia(uid, text, task, reasoning_effort=None):
 
     if not answer.strip():
         raise RuntimeError(
-            f"NVIDIA ({NVIDIA_MODEL}) mengembalikan jawaban kosong."
+            f"NVIDIA ({model or NVIDIA_MODEL}) mengembalikan jawaban kosong."
         )
 
-    return answer, NVIDIA_MODEL
+    return answer, (model or NVIDIA_MODEL)
 
 
 # ============================================================
@@ -2500,16 +2500,17 @@ def _provider_available(name):
     }.get(name, False)
 
 
-def _provider_call(name, uid, text, task):
+def _provider_call(name, uid, text, task, model=None, reasoning_effort=None):
     if name == "nvidia":
-        return call_nvidia(uid, text, task)
+        return call_nvidia(uid, text, task, reasoning_effort=reasoning_effort, model=model)
     if name == "groq":
-        return call_groq(uid, text, task)
+        return call_groq(uid, text, task, model=model)
     if name == "gemini":
         return call_gemini(uid, text, task)
     if name == "openrouter":
-        return call_openrouter(uid, text, task, model=OPENROUTER_FREE_MODEL)
+        return call_openrouter(uid, text, task, model=model or OPENROUTER_FREE_MODEL)
     raise RuntimeError(f"Provider tidak dikenal: {name}")
+
 
 
 def _provider_label(name):
@@ -2522,83 +2523,60 @@ def _provider_label(name):
 
 
 def _auto_provider_order(task):
-    # NVIDIA menjadi otak utama untuk teks: ringan, coding, teknik,
-    # reasoning. Groq menjadi fallback utama, lalu OpenRouter/Gemini.
-    if task in ("reasoning", "math"):
-        return ["nvidia", "groq", "openrouter", "gemini"]
-    if task in ("coding", "technical", "civil"):
+    if task in ("reasoning", "math", "coding", "technical", "civil"):
         return ["nvidia", "groq", "openrouter", "gemini"]
     return ["nvidia", "groq", "openrouter", "gemini"]
 
 
-def chat_router(uid, text):
+MANUAL_AI_MODES = {
+    "nvidia_fast": ("nvidia", NVIDIA_MODEL, "none", "🟢 NVIDIA Fast"),
+    "nvidia_coding": ("nvidia", NVIDIA_MODEL, "high", "💻 NVIDIA Coding"),
+    "nvidia_technical": ("nvidia", NVIDIA_MODEL, "high", "🔧 NVIDIA Technical"),
+    "nvidia_reasoning": ("nvidia", NVIDIA_MODEL, "max", "🧠 NVIDIA Reasoning"),
+    "groq_fast": ("groq", GROQ_FAST_MODEL, None, "⚡ Groq Fast"),
+    "groq_coding": ("groq", GROQ_CODING_MODEL, None, "💻 Groq Coding"),
+    "groq_reasoning": ("groq", GROQ_REASONING_MODEL, None, "🧠 Groq Reasoning"),
+    "gemini": ("gemini", GEMINI_CHAT_MODEL, None, "👁 Gemini"),
+    "openrouter": ("openrouter", OPENROUTER_FREE_MODEL, None, "🌐 OpenRouter FREE"),
+}
 
+def chat_router(uid, text):
     task = classify_task(text)
     mode = user_ai_mode.get(str(uid), "auto")
 
-    log.info(
-        "TASK=%s | MODE=%s | text=%s",
-        task,
-        mode,
-        text[:120],
-    )
-
-    # Civil Calculator deterministic: jangan buang quota AI untuk rumus
     if task == "civil":
         civil_result = civil_calculator(text)
         if civil_result:
-            return (
-                civil_result,
-                "Civil Calculator",
-                "Local Calculation Engine",
-                task,
-            )
+            return (civil_result, "Civil Calculator", "Local Calculation Engine", task)
 
     if mode == "auto":
-        order = _auto_provider_order(task)
+        routes = [(p, None, None) for p in _auto_provider_order(task)]
     else:
-        # Manual mode = provider pilihan utama, tetapi tetap fallback.
-        fallback = ["nvidia", "groq", "openrouter", "gemini"]
-        order = [mode] + [x for x in fallback if x != mode]
+        cfg = MANUAL_AI_MODES.get(mode)
+        if not cfg:
+            mode = "auto"
+            routes = [(p, None, None) for p in _auto_provider_order(task)]
+        else:
+            provider, model, effort, _label = cfg
+            fallback = ["nvidia", "groq", "openrouter", "gemini"]
+            routes = [(provider, model, effort)] + [(p, None, None) for p in fallback if p != provider]
 
     errors = []
-
-    for provider_name in order:
+    for provider_name, selected_model, effort in routes:
         if not _provider_available(provider_name):
             continue
         try:
-            log.info(
-                "TRY PROVIDER | task=%s | mode=%s | provider=%s",
-                task, mode, provider_name,
-            )
             answer, model = _call_with_retry(
-                lambda p=provider_name: _provider_call(p, uid, text, task),
+                lambda p=provider_name, m=selected_model, e=effort: _provider_call(p, uid, text, task, model=m, reasoning_effort=e),
                 retries=1,
             )
             if not answer.strip():
                 raise RuntimeError("Provider mengembalikan jawaban kosong.")
-            log.info(
-                "CHAT SUCCESS | task=%s | mode=%s | provider=%s | model=%s",
-                task, mode, provider_name, model,
-            )
-            return (
-                answer,
-                _provider_label(provider_name),
-                model,
-                task,
-            )
+            return (answer, _provider_label(provider_name), model, task)
         except Exception as e:
-            error_text = str(e)
-            errors.append(f"{_provider_label(provider_name)}: {error_text[:300]}")
-            log.warning(
-                "PROVIDER FAILED | provider=%s | error=%s",
-                provider_name, error_text[:300],
-            )
+            errors.append(f"{_provider_label(provider_name)}: {str(e)[:300]}")
 
-    raise RuntimeError(
-        "Semua provider AI GRATIS gagal. " + " | ".join(errors)
-    )
-
+    raise RuntimeError("Semua provider AI GRATIS gagal. " + " | ".join(errors))
 
 # ============================================================
 # TELEGRAM API
@@ -3518,8 +3496,13 @@ async def handle(update):
 
         mode_map = {
             "ai_auto": "auto",
-            "ai_nvidia": "nvidia",
-            "ai_groq": "groq",
+            "ai_nvidia_fast": "nvidia_fast",
+            "ai_nvidia_coding": "nvidia_coding",
+            "ai_nvidia_technical": "nvidia_technical",
+            "ai_nvidia_reasoning": "nvidia_reasoning",
+            "ai_groq_fast": "groq_fast",
+            "ai_groq_coding": "groq_coding",
+            "ai_groq_reasoning": "groq_reasoning",
             "ai_gemini": "gemini",
             "ai_openrouter": "openrouter",
         }
@@ -3534,13 +3517,7 @@ async def handle(update):
                 except Exception:
                     pass
             if chat_id:
-                label = {
-                    "auto": "🔄 AUTO",
-                    "nvidia": "🟢 NVIDIA DeepSeek V4 Flash",
-                    "groq": "⚡ Groq",
-                    "gemini": "👁 Gemini",
-                    "openrouter": "🌐 OpenRouter Free",
-                }[mode_map[data]]
+                label = ("🔄 AUTO" if mode_map[data] == "auto" else MANUAL_AI_MODES.get(mode_map[data], (None, None, None, mode_map[data]))[3])
                 await send_text(
                     chat_id,
                     f"✅ Mode AI diubah ke: {label}\n\n"
@@ -3713,33 +3690,25 @@ hasil material bukan pengganti desain engineer.
         current_mode = user_ai_mode.get(str(uid), "auto")
         keyboard = {
             "inline_keyboard": [
-                [
-                    {"text": "🔄 AUTO", "callback_data": "ai_auto"},
-                    {"text": "🟢 NVIDIA", "callback_data": "ai_nvidia"},
-                ],
-                [
-                    {"text": "⚡ Groq", "callback_data": "ai_groq"},
-                    {"text": "👁 Gemini", "callback_data": "ai_gemini"},
-                ],
-                [
-                    {"text": "🌐 OpenRouter FREE", "callback_data": "ai_openrouter"},
-                ],
+                [{"text": "🔄 AUTO", "callback_data": "ai_auto"}],
+                [{"text": "🟢 NVIDIA Fast", "callback_data": "ai_nvidia_fast"}, {"text": "💻 NVIDIA Coding", "callback_data": "ai_nvidia_coding"}],
+                [{"text": "🔧 NVIDIA Technical", "callback_data": "ai_nvidia_technical"}, {"text": "🧠 NVIDIA Reasoning", "callback_data": "ai_nvidia_reasoning"}],
+                [{"text": "⚡ Groq Fast", "callback_data": "ai_groq_fast"}, {"text": "💻 Groq Coding", "callback_data": "ai_groq_coding"}],
+                [{"text": "🧠 Groq Reasoning", "callback_data": "ai_groq_reasoning"}],
+                [{"text": "👁 Gemini", "callback_data": "ai_gemini"}, {"text": "🌐 OpenRouter FREE", "callback_data": "ai_openrouter"}],
             ]
         }
 
+        current_label = "🔄 AUTO" if current_mode == "auto" else MANUAL_AI_MODES.get(current_mode, (None,None,None,current_mode))[3]
         status = (
-            f"🤖 MODE AI: {current_mode.upper()}\n\n"
+            f"🤖 MODE AI: {current_label}\n\n"
             f"NVIDIA: {'✅ AKTIF' if nvidia else '❌ TIDAK AKTIF'}\n"
             f"Groq: {'✅ AKTIF' if groq else '❌ TIDAK AKTIF'}\n"
             f"Gemini: {'✅ AKTIF' if gemini else '❌ TIDAK AKTIF'}\n"
             f"OpenRouter FREE: {'✅ AKTIF' if openrouter else '❌ TIDAK AKTIF'}\n\n"
-            "Pilih AI utama di bawah. Fallback GRATIS tetap aktif.\n\n"
-            "🟢 NVIDIA = chat, coding, teknik, reasoning\n"
-            "⚡ Groq = fallback / mode manual\n"
-            "👁 Gemini = gambar & video\n"
-            "🌐 OpenRouter = fallback FREE\n\n"
-            f"NVIDIA model: {NVIDIA_MODEL}\n"
-            f"Gemini model: {GEMINI_CHAT_MODEL}\n"
+            "Pilih AI/model utama. Fallback GRATIS tetap aktif.\n\n"
+            f"NVIDIA: {NVIDIA_MODEL}\n"
+            f"Gemini: {GEMINI_CHAT_MODEL}\n"
             f"Groq Coding: {GROQ_CODING_MODEL}\n"
             f"Groq Reasoning: {GROQ_REASONING_MODEL}\n"
             f"Groq Fast: {GROQ_FAST_MODEL}\n"
