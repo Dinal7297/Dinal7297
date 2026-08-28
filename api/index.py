@@ -151,6 +151,12 @@ CLOUDFLARE_ENABLED = bool(
 SYSTEM = """
 Kamu adalah Designmanufaktur Super AI Agent.
 
+PENTING TENTANG IDENTITAS PENGGUNA:
+- Jangan menebak atau mengarang nama/panggilan pengguna.
+- Jangan menganggap nama provider/model AI sebagai nama pengguna.
+- Hanya gunakan nama pengguna jika pengguna secara eksplisit mengatakan "nama saya ..." atau meminta dipanggil dengan nama tertentu.
+- Jika pengguna menulis "hai Nvidia", "halo Gemini", "tes Groq", atau menyebut nama model/provider, itu BUKAN nama pengguna.
+
 Kamu adalah asisten AI praktis untuk:
 
 - bengkel las
@@ -2546,13 +2552,14 @@ MANUAL_AI_MODES = {
 }
 
 def chat_router(uid, text):
+    """Route AI dan kembalikan metadata transparan untuk debug."""
     task = classify_task(text)
     mode = user_ai_mode.get(str(uid), "auto")
 
     if task == "civil":
         civil_result = civil_calculator(text)
         if civil_result:
-            return (civil_result, "Civil Calculator", "Local Calculation Engine", task)
+            return (civil_result, "Civil Calculator", "Local Calculation Engine", task, [])
 
     if mode == "auto":
         routes = [(p, None, None) for p in _auto_provider_order(task)]
@@ -2563,26 +2570,72 @@ def chat_router(uid, text):
             routes = [(p, None, None) for p in _auto_provider_order(task)]
         else:
             provider, model, effort, _label = cfg
+            # Provider/model pilihan pengguna selalu dicoba pertama.
+            # Fallback gratis tetap aktif jika pilihan utama gagal.
             fallback = ["nvidia", "groq", "openrouter", "gemini"]
-            routes = [(provider, model, effort)] + [(p, None, None) for p in fallback if p != provider]
+            routes = [(provider, model, effort)] + [
+                (p, None, None) for p in fallback if p != provider
+            ]
 
     errors = []
+    attempted = []
     for provider_name, selected_model, effort in routes:
         if not _provider_available(provider_name):
+            attempted.append({
+                "provider": provider_name,
+                "status": "unavailable",
+                "model": selected_model or "default",
+            })
             continue
         try:
             answer, model = _call_with_retry(
-                lambda p=provider_name, m=selected_model, e=effort: _provider_call(p, uid, text, task, model=m, reasoning_effort=e),
+                lambda p=provider_name, m=selected_model, e=effort: _provider_call(
+                    p, uid, text, task, model=m, reasoning_effort=e
+                ),
                 retries=1,
             )
             if not answer.strip():
                 raise RuntimeError("Provider mengembalikan jawaban kosong.")
-            return (answer, _provider_label(provider_name), model, task)
+            attempted.append({
+                "provider": provider_name,
+                "status": "success",
+                "model": model,
+            })
+            return (answer, _provider_label(provider_name), model, task, attempted)
         except Exception as e:
-            errors.append(f"{_provider_label(provider_name)}: {str(e)[:300]}")
+            err = str(e)
+            errors.append(f"{_provider_label(provider_name)}: {err[:300]}")
+            attempted.append({
+                "provider": provider_name,
+                "status": "failed",
+                "model": selected_model or "default",
+                "error": err[:300],
+            })
 
     detail = "\n".join(f"• {e}" for e in errors)
     raise RuntimeError("Semua provider AI GRATIS gagal.\n" + detail)
+
+
+def _debug_provider_line(provider, model, task, attempted):
+    """Header transparan agar pengguna tahu AI/model yang benar-benar menjawab."""
+    labels = {
+        "NVIDIA DeepSeek V4 Flash": "🟢 NVIDIA",
+        "Groq": "⚡ Groq",
+        "Gemini": "👁 Gemini",
+        "OpenRouter Free": "🌐 OpenRouter FREE",
+        "Civil Calculator": "🏗️ Civil Calculator",
+    }
+    label = labels.get(provider, provider)
+
+    fallback_used = len([x for x in attempted if x.get("status") == "failed"]) > 0
+    mode_text = "🔄 FALLBACK" if fallback_used else "🎯 UTAMA"
+
+    return (
+        f"🤖 {label}\n"
+        f"🧠 Model: {model}\n"
+        f"📌 Task: {task}\n"
+        f"{mode_text}\n\n"
+    )
 
 # ============================================================
 # TELEGRAM API
@@ -4040,15 +4093,26 @@ Jangan mengarang ukuran yang tidak terlihat.
             },
         )
 
+        started_at = time.perf_counter()
+
         (
             answer,
             provider,
             model,
             task,
+            attempted,
         ) = await asyncio.to_thread(
             chat_router,
             uid,
             text,
+        )
+
+        elapsed = time.perf_counter() - started_at
+        debug_header = _debug_provider_line(
+            provider,
+            model,
+            task,
+            attempted,
         )
 
         remember(
@@ -4067,7 +4131,9 @@ Jangan mengarang ukuran yang tidak terlihat.
 
         await send_text(
             chat_id,
-            answer,
+            debug_header
+            + f"⏱️ Waktu respons: {elapsed:.2f} detik\n\n"
+            + answer,
         )
 
         log.info(
