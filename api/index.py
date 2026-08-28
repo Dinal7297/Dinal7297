@@ -57,10 +57,6 @@ OPENROUTER_FREE_MODEL = os.getenv(
     "OPENROUTER_FREE_MODEL",
     "openrouter/free",
 )
-OPENROUTER_GROK_FREE_MODEL = os.getenv(
-    "OPENROUTER_GROK_FREE_MODEL",
-    "x-ai/grok-4-fast:free",
-)
 
 GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_FAST_MODEL = os.getenv(
@@ -79,14 +75,17 @@ GROQ_CODING_MODEL = os.getenv(
 )
 
 # ------------------------------------------------------------
-# NVIDIA NIM / DeepSeek-V4-Flash-0731 (FREE TRIAL ENDPOINT)
+# NVIDIA NIM / DeepSeek-V4-Flash-0731
+# ADITIF: provider baru, provider lama tidak diubah.
 # ------------------------------------------------------------
 NVIDIA_KEY = os.getenv("NVIDIA_API_KEY", "")
 NVIDIA_MODEL = os.getenv(
     "NVIDIA_MODEL",
     "deepseek-ai/deepseek-v4-flash-0731",
 )
-NVIDIA_MAX_OUTPUT_TOKENS = int(os.getenv("NVIDIA_MAX_OUTPUT_TOKENS", "4096"))
+NVIDIA_MAX_OUTPUT_TOKENS = int(
+    os.getenv("NVIDIA_MAX_OUTPUT_TOKENS", "16384")
+)
 
 # ------------------------------------------------------------
 # MODEL CADANGAN TAMBAHAN (BARU)
@@ -469,7 +468,7 @@ nvidia = (
     OpenAI(
         api_key=NVIDIA_KEY,
         base_url="https://integrate.api.nvidia.com/v1",
-        timeout=30.0,
+        timeout=60.0,
         max_retries=0,
     )
     if NVIDIA_KEY
@@ -484,7 +483,7 @@ nvidia = (
 memory = {}
 MAX_MEMORY = 20
 
-# Mode AI per pengguna: auto / nvidia / groq / gemini / openrouter
+# Mode AI per pengguna. Default tetap AUTO sehingga perilaku lama tidak berubah.
 user_ai_mode = {}
 
 # ============================================================
@@ -2358,7 +2357,7 @@ def call_nvidia(uid, text, task, reasoning_effort=None, model=None):
     effort = reasoning_effort
     if effort is None:
         effort = {
-            "reasoning": "max",
+            "reasoning": "high",
             "math": "high",
             "coding": "high",
             "technical": "high",
@@ -2367,29 +2366,20 @@ def call_nvidia(uid, text, task, reasoning_effort=None, model=None):
             "general": "none",
         }.get(task, "none")
 
-    # NVIDIA API reference saat ini menerima reasoning_effort sebagai
-    # parameter top-level. Ini menghindari request yang menggantung karena
-    # payload reasoning lama.
-    if effort == "none":
-        output_tokens = min(NVIDIA_MAX_OUTPUT_TOKENS, 2048)
-    elif effort == "high":
-        output_tokens = min(NVIDIA_MAX_OUTPUT_TOKENS, 4096)
-    else:
-        output_tokens = min(NVIDIA_MAX_OUTPUT_TOKENS, 6144)
-
+    # Mengikuti pola request NVIDIA yang kamu berikan.
+    # reasoning_effort berada di chat_template_kwargs.
     r = nvidia.chat.completions.create(
         model=(model or NVIDIA_MODEL),
-        messages=build_messages(
-            uid,
-            text,
-            task,
-            max_turns=MAX_CONTEXT_TURNS,
-            max_chars_per_item=MAX_CONTEXT_CHARS_PER_ITEM,
-        ),
+        messages=build_messages(uid, text, task),
         temperature=1,
         top_p=0.95,
-        max_tokens=output_tokens,
-        reasoning_effort=effort,
+        max_tokens=NVIDIA_MAX_OUTPUT_TOKENS,
+        extra_body={
+            "chat_template_kwargs": {
+                "thinking": effort != "none",
+                "reasoning_effort": effort,
+            }
+        },
         stream=False,
     )
 
@@ -2503,63 +2493,462 @@ def _call_with_retry(fn, retries=1, base_delay=1.5):
 # SMART CHAT ROUTER
 # ============================================================
 
-def _provider_available(name):
-    return {
-        "nvidia": bool(nvidia),
-        "groq": bool(groq),
-        "grok": bool(openrouter),
-        "gemini": bool(gemini),
-        "openrouter": bool(openrouter),
-    }.get(name, False)
+def chat_router(uid, text):
+
+    task = classify_task(text)
+
+    log.info(
+        "TASK=%s | text=%s",
+        task,
+        text[:120],
+    )
+
+    # Civil Calculator deterministic
+    if task == "civil":
+
+        civil_result = civil_calculator(
+            text
+        )
+
+        if civil_result:
+
+            return (
+                civil_result,
+                "Civil Calculator",
+                "Local Calculation Engine",
+                task,
+                [{
+                    "provider": "local",
+                    "model": "Local Calculation Engine",
+                    "status": "SUCCESS",
+                }],
+                0.0,
+                "LOCAL",
+            )
+
+    # --------------------------------------------------------
+    # MANUAL MODE (ADITIF)
+    # Default AUTO tidak berubah. Jika user memilih AI tertentu,
+    # AI tersebut dicoba terlebih dahulu lalu fallback ke routing lama.
+    # --------------------------------------------------------
+    selected_mode = user_ai_mode.get(str(uid), "auto")
+    manual_attempts = []
+    if selected_mode != "auto":
+        manual_map = {
+            "nvidia_fast": ("NVIDIA Fast", "nvidia", NVIDIA_MODEL, "none"),
+            "nvidia_coding": ("NVIDIA Coding", "nvidia", NVIDIA_MODEL, "high"),
+            "nvidia_technical": ("NVIDIA Technical", "nvidia", NVIDIA_MODEL, "high"),
+            "nvidia_reasoning": ("NVIDIA Reasoning", "nvidia", NVIDIA_MODEL, "max"),
+            "groq_fast": ("Groq Fast", "groq", GROQ_FAST_MODEL, None),
+            "groq_coding": ("Groq Coding", "groq", GROQ_CODING_MODEL, None),
+            "groq_reasoning": ("Groq Reasoning", "groq", GROQ_REASONING_MODEL, None),
+            "gemini": ("Gemini", "gemini", GEMINI_CHAT_MODEL, None),
+            "openrouter": ("OpenRouter FREE", "openrouter", OPENROUTER_FREE_MODEL, None),
+        }
+        cfg = manual_map.get(selected_mode)
+        if cfg:
+            label, provider, selected_model, effort = cfg
+            attempts = []
+            try:
+                started_manual = time.perf_counter()
+                if provider == "nvidia":
+                    answer, model = _call_with_retry(
+                        lambda: call_nvidia(uid, text, task, reasoning_effort=effort, model=selected_model),
+                        retries=0,
+                    )
+                elif provider == "groq":
+                    answer, model = _call_with_retry(
+                        lambda: call_groq(uid, text, task, model=selected_model),
+                        retries=1,
+                    )
+                elif provider == "gemini":
+                    answer, model = _call_with_retry(
+                        lambda: call_gemini(uid, text, task),
+                        retries=0,
+                    )
+                else:
+                    answer, model = _call_with_retry(
+                        lambda: call_openrouter(uid, text, task, model=selected_model),
+                        retries=1,
+                    )
+                attempts.append({"provider": provider, "model": model, "status": "SUCCESS"})
+                return answer, label, model, task, attempts, time.perf_counter() - started_manual, "MAIN"
+            except Exception as e:
+                attempts.append({"provider": provider, "model": selected_model, "status": "FAILED", "reason": _transparent_error_reason(e)})
+                manual_attempts = attempts
+                log.warning("MANUAL PROVIDER FAILED | mode=%s | error=%s", selected_mode, str(e)[:300])
+                # fallback masuk ke routing lama di bawah
+
+    if task == "technical":
+
+        # Prioritas: Groq (kuota harian besar & terpisah per model)
+        # -> OpenRouter -> Gemini.
+        providers = [
+            (
+                "Groq (gpt-oss-20b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_FAST_MODEL,
+                ),
+            ),
+            (
+                "Groq (gpt-oss-120b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_REASONING_MODEL,
+                ),
+            ),
+            (
+                "OpenRouter Free",
+                lambda: call_openrouter(
+                    uid,
+                    text,
+                    task
+                ),
+            ),
+            (
+                "Groq Cadangan (gpt-oss-20b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_1,
+                ),
+            ),
+            (
+                "Groq Cadangan (gpt-oss-120b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_2,
+                ),
+            ),
+            (
+                "Groq Cadangan (llama-3.1-8b-instant)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_4,
+                ),
+            ),
+            (
+                "OpenRouter Cadangan",
+                lambda: call_openrouter(
+                    uid,
+                    text,
+                    task,
+                    model=OPENROUTER_BACKUP_MODEL,
+                ),
+            ),
+            (
+                "Gemini",
+                lambda: call_gemini(
+                    uid,
+                    text,
+                    task
+                ),
+            ),
+        ]
+
+    elif task == "coding":
+
+        # Prioritas: model coding khusus dulu, lalu model Groq
+        # lain (kuota terpisah), baru provider lain.
+        providers = [
+            (
+                "Groq (qwen3-32b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_CODING_MODEL,
+                ),
+            ),
+            (
+                "Groq (gpt-oss-120b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_REASONING_MODEL,
+                ),
+            ),
+            (
+                "Groq (gpt-oss-20b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_FAST_MODEL,
+                ),
+            ),
+            (
+                "OpenRouter Free",
+                lambda: call_openrouter(
+                    uid,
+                    text,
+                    task
+                ),
+            ),
+            (
+                "Groq Cadangan (qwen3-32b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_3,
+                ),
+            ),
+            (
+                "Groq Cadangan (gpt-oss-120b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_2,
+                ),
+            ),
+            (
+                "OpenRouter Cadangan",
+                lambda: call_openrouter(
+                    uid,
+                    text,
+                    task,
+                    model=OPENROUTER_BACKUP_MODEL,
+                ),
+            ),
+            (
+                "Gemini",
+                lambda: call_gemini(
+                    uid,
+                    text,
+                    task
+                ),
+            ),
+        ]
+
+    elif task in (
+        "reasoning",
+        "math",
+    ):
+
+        providers = [
+            (
+                "Groq (gpt-oss-120b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_REASONING_MODEL,
+                ),
+            ),
+            (
+                "Groq (gpt-oss-20b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_FAST_MODEL,
+                ),
+            ),
+            (
+                "OpenRouter Free",
+                lambda: call_openrouter(
+                    uid,
+                    text,
+                    task
+                ),
+            ),
+            (
+                "Groq Cadangan (gpt-oss-120b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_2,
+                ),
+            ),
+            (
+                "Groq Cadangan (llama-3.1-8b-instant)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_4,
+                ),
+            ),
+            (
+                "OpenRouter Cadangan",
+                lambda: call_openrouter(
+                    uid,
+                    text,
+                    task,
+                    model=OPENROUTER_BACKUP_MODEL,
+                ),
+            ),
+            (
+                "Gemini",
+                lambda: call_gemini(
+                    uid,
+                    text,
+                    task
+                ),
+            ),
+        ]
+
+    else:
+
+        # general / creative: prioritaskan model dengan kuota
+        # harian paling besar supaya jarang kena limit.
+        providers = [
+            (
+                "Groq (gpt-oss-20b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_FAST_MODEL,
+                ),
+            ),
+            (
+                "Groq (gpt-oss-120b)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_REASONING_MODEL,
+                ),
+            ),
+            (
+                "OpenRouter Free",
+                lambda: call_openrouter(
+                    uid,
+                    text,
+                    task
+                ),
+            ),
+            (
+                "Groq Cadangan (llama-3.1-8b-instant)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_4,
+                ),
+            ),
+            (
+                "Groq Cadangan (gemma2-9b-it)",
+                lambda: call_groq(
+                    uid,
+                    text,
+                    task,
+                    model=GROQ_BACKUP_MODEL_5,
+                ),
+            ),
+            (
+                "OpenRouter Cadangan",
+                lambda: call_openrouter(
+                    uid,
+                    text,
+                    task,
+                    model=OPENROUTER_BACKUP_MODEL,
+                ),
+            ),
+            (
+                "Gemini",
+                lambda: call_gemini(
+                    uid,
+                    text,
+                    task
+                ),
+            ),
+        ]
+
+    errors = []
+    attempts = list(manual_attempts)
+    started = time.perf_counter()
+
+    for provider_name, fn in providers:
+
+        try:
+
+            log.info(
+                "TRY PROVIDER | task=%s | provider=%s",
+                task,
+                provider_name,
+            )
+
+            answer, model = _call_with_retry(
+                fn,
+                retries=1,
+            )
+
+            if not answer.strip():
+                raise RuntimeError(
+                    "Provider mengembalikan jawaban kosong."
+                )
+
+            log.info(
+                "CHAT SUCCESS | task=%s | provider=%s | model=%s",
+                task,
+                provider_name,
+                model,
+            )
+
+            attempts.append({
+                "provider": provider_name,
+                "model": model,
+                "status": "SUCCESS",
+            })
+
+            status = "MAIN" if len(attempts) == 1 else "FALLBACK"
+            return (
+                answer,
+                provider_name,
+                model,
+                task,
+                attempts,
+                time.perf_counter() - started,
+                status,
+            )
+
+        except Exception as e:
+
+            error_text = str(e)
+
+            errors.append(
+                f"{provider_name}: {error_text[:300]}"
+            )
+            attempts.append({
+                "provider": provider_name,
+                "model": None,
+                "status": "FAILED",
+                "reason": _transparent_error_reason(e),
+            })
+
+            log.warning(
+                "PROVIDER FAILED | provider=%s | error=%s",
+                provider_name,
+                error_text[:300],
+            )
+
+    raise RuntimeError(
+        "Semua provider AI GRATIS gagal. "
+        + " | ".join(errors)
+    )
 
 
-def _provider_call(name, uid, text, task, model=None, reasoning_effort=None):
-    if name == "nvidia":
-        return call_nvidia(uid, text, task, reasoning_effort=reasoning_effort, model=model)
-    if name == "groq":
-        return call_groq(uid, text, task, model=model)
-    if name == "gemini":
-        return call_gemini(uid, text, task)
-    if name == "grok":
-        return call_openrouter(uid, text, task, model=model or OPENROUTER_GROK_FREE_MODEL)
-    if name == "openrouter":
-        return call_openrouter(uid, text, task, model=model or OPENROUTER_FREE_MODEL)
-    raise RuntimeError(f"Provider tidak dikenal: {name}")
-
-
-
-def _provider_label(name):
-    return {
-        "nvidia": "NVIDIA DeepSeek V4 Flash",
-        "groq": "Groq",
-        "grok": "Grok FREE (OpenRouter)",
-        "gemini": "Gemini",
-        "openrouter": "OpenRouter Free",
-    }.get(name, name)
-
-
-def _auto_provider_order(task):
-    if task in ("reasoning", "math", "coding", "technical", "civil"):
-        return ["nvidia", "groq", "grok", "openrouter", "gemini"]
-    # Chat ringan/general -> Grok FREE menjadi pilihan pertama.
-    return ["grok", "nvidia", "groq", "openrouter", "gemini"]
-
-
-MANUAL_AI_MODES = {
-    "nvidia_fast": ("nvidia", NVIDIA_MODEL, "none", "🟢 NVIDIA Fast"),
-    "nvidia_coding": ("nvidia", NVIDIA_MODEL, "high", "💻 NVIDIA Coding"),
-    "nvidia_technical": ("nvidia", NVIDIA_MODEL, "high", "🔧 NVIDIA Technical"),
-    "nvidia_reasoning": ("nvidia", NVIDIA_MODEL, "max", "🧠 NVIDIA Reasoning"),
-    "groq_fast": ("groq", GROQ_FAST_MODEL, None, "⚡ Groq Fast"),
-    "groq_coding": ("groq", GROQ_CODING_MODEL, None, "💻 Groq Coding"),
-    "groq_reasoning": ("groq", GROQ_REASONING_MODEL, None, "🧠 Groq Reasoning"),
-    "grok_free": ("grok", OPENROUTER_GROK_FREE_MODEL, None, "🟣 Grok FREE"),
-    "gemini": ("gemini", GEMINI_CHAT_MODEL, None, "👁 Gemini"),
-    "openrouter": ("openrouter", OPENROUTER_FREE_MODEL, None, "🌐 OpenRouter FREE"),
-}
+# ============================================================
+# TRANSPARENCY
+# ============================================================
 
 def _transparent_error_reason(exc):
-    """Ringkas error provider tanpa membocorkan API key atau payload."""
     t = str(exc).lower()
     if "401" in t or "unauthorized" in t or "invalid api key" in t or "authentication" in t:
         return "AUTH"
@@ -2567,7 +2956,7 @@ def _transparent_error_reason(exc):
         return "FORBIDDEN"
     if "429" in t or "rate limit" in t or "resource_exhausted" in t or "quota" in t:
         return "RATE LIMIT/QUOTA"
-    if "timeout" in t or "timed out" in t or "readtimeout" in t:
+    if "timeout" in t or "timed out" in t:
         return "TIMEOUT"
     if "model_not_found" in t or "model not found" in t or "does not exist" in t:
         return "MODEL TIDAK TERSEDIA"
@@ -2576,143 +2965,46 @@ def _transparent_error_reason(exc):
     return "ERROR"
 
 
-def _transparent_route_line(provider_name, model, status, reason=None):
-    icons = {"nvidia": "🟢", "groq": "⚡", "grok": "🟣", "gemini": "👁️", "openrouter": "🌐"}
-    icon = icons.get(provider_name, "🤖")
-    label = _provider_label(provider_name)
-    suffix = f" — {reason}" if reason else ""
-    return f"{icon} {label} | {model or 'default'} | {status}{suffix}"
+def _transparent_provider_label(name):
+    labels = {
+        "nvidia": "NVIDIA DeepSeek V4 Flash",
+        "groq": "Groq",
+        "gemini": "Gemini",
+        "openrouter": "OpenRouter FREE",
+        "local": "Civil Calculator",
+    }
+    return labels.get(name, name)
 
 
-def chat_router(uid, text):
-    started = time.perf_counter()
-    task = classify_task(text)
-    mode = user_ai_mode.get(str(uid), "auto")
-
-    if task == "civil":
-        civil_result = civil_calculator(text)
-        if civil_result:
-            elapsed = time.perf_counter() - started
-            meta = {
-                "provider": "local",
-                "provider_label": "Civil Calculator",
-                "model": "Local Calculation Engine",
-                "task": task,
-                "status": "LOCAL",
-                "elapsed": elapsed,
-                "routes": ["🧮 Civil Calculator | Local Calculation Engine | LOCAL"],
-            }
-            return civil_result, meta
-
-    if mode == "auto":
-        routes = [(p, None, None) for p in _auto_provider_order(task)]
-    else:
-        cfg = MANUAL_AI_MODES.get(mode)
-        if not cfg:
-            mode = "auto"
-            routes = [(p, None, None) for p in _auto_provider_order(task)]
+def _transparent_format(answer, provider, model, task, status, elapsed, attempts):
+    icons = {"nvidia": "🟢", "groq": "⚡", "gemini": "👁️", "openrouter": "🌐", "local": "🧮"}
+    icon = icons.get(provider, "🤖")
+    lines = []
+    for a in attempts:
+        p = a.get("provider", "unknown")
+        label = _transparent_provider_label(p)
+        icon2 = icons.get(p, "🤖")
+        m = a.get("model") or "default"
+        if a.get("status") == "SUCCESS":
+            lines.append(f"{icon2} {label} — {m} — ✅ BERHASIL")
         else:
-            provider, model, effort, _label = cfg
-            fallback = ["grok", "nvidia", "groq", "openrouter", "gemini"]
-            routes = [(provider, model, effort)] + [(p, None, None) for p in fallback if p != provider]
-
-    attempts = []
-    for provider_name, selected_model, effort in routes:
-        if not _provider_available(provider_name):
-            attempts.append({
-                "provider": provider_name,
-                "model": selected_model,
-                "status": "SKIP",
-                "reason": "API TIDAK AKTIF",
-            })
-            continue
-        try:
-            answer, model = _call_with_retry(
-                lambda p=provider_name, m=selected_model, e=effort: _provider_call(
-                    p, uid, text, task, model=m, reasoning_effort=e
-                ),
-                retries=1,
-            )
-            if not answer.strip():
-                raise RuntimeError("Provider mengembalikan jawaban kosong.")
-            status = "MAIN" if not attempts else "FALLBACK"
-            attempts.append({
-                "provider": provider_name,
-                "model": model,
-                "status": "SUCCESS",
-            })
-            elapsed = time.perf_counter() - started
-            meta = {
-                "provider": provider_name,
-                "provider_label": _provider_label(provider_name),
-                "model": model,
-                "task": task,
-                "status": status,
-                "elapsed": elapsed,
-                "routes": attempts,
-            }
-            return answer, meta
-        except Exception as e:
-            attempts.append({
-                "provider": provider_name,
-                "model": selected_model,
-                "status": "FAILED",
-                "reason": _transparent_error_reason(e),
-            })
-
-    elapsed = time.perf_counter() - started
-    detail = "\n".join(
-        f"• {_provider_label(a['provider'])}: {a.get('reason', a.get('status', 'UNKNOWN'))}"
-        for a in attempts
-    )
-    raise RuntimeError("Semua provider AI GRATIS gagal.\n" + detail)
-
-
-def format_transparent_response(answer, meta):
-    """Header wajib yang menjelaskan AI/model/task/status/waktu/riwayat."""
-    if meta.get("provider") == "local":
-        history = "\n".join(f"• {x}" for x in meta.get("routes", []))
-    else:
-        history_lines = []
-        for a in meta.get("routes", []):
-            if a.get("status") == "FAILED":
-                history_lines.append(
-                    _transparent_route_line(
-                        a["provider"], a.get("model"), "❌ GAGAL", a.get("reason")
-                    )
-                )
-            elif a.get("status") == "SKIP":
-                history_lines.append(
-                    _transparent_route_line(
-                        a["provider"], a.get("model"), "⏭️ DILEWATI", a.get("reason")
-                    )
-                )
-            elif a.get("status") == "SUCCESS":
-                history_lines.append(
-                    _transparent_route_line(
-                        a["provider"], a.get("model"), "✅ BERHASIL"
-                    )
-                )
-        history = "\n".join(history_lines) if history_lines else "• Tidak ada percobaan provider."
-
-    status_icon = "🎯" if meta.get("status") == "MAIN" else ("🔄" if meta.get("status") == "FALLBACK" else "🧮")
-    provider_display = meta.get("provider_label", "Unknown")
-    model_display = meta.get("model", "Unknown")
-    task_display = str(meta.get("task", "general")).upper()
-    elapsed = meta.get("elapsed", 0.0)
-
+            reason = a.get("reason", "ERROR")
+            lines.append(f"{icon2} {label} — {m} — ❌ GAGAL — {reason}")
+    history = "\n".join(lines) if lines else "• Tidak ada riwayat routing."
+    status_icon = "🎯" if status == "MAIN" else "🔄" if status == "FALLBACK" else "🧮"
     header = (
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🤖 AI: {provider_display}\n"
-        f"🧠 Model: {model_display}\n"
-        f"📌 Task: {task_display}\n"
-        f"{status_icon} Status: {meta.get('status', 'UNKNOWN')}\n"
+        f"🤖 AI: {icon} {_transparent_provider_label(provider)}\n"
+        f"🧠 Model: {model}\n"
+        f"📌 Task: {str(task).upper()}\n"
+        f"{status_icon} Status: {status}\n"
         f"⏱️ Waktu: {elapsed:.2f} detik\n"
         "🔍 Riwayat routing:\n"
         f"{history}\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
     )
     return header + answer
+
 
 # ============================================================
 # TELEGRAM API
@@ -3158,70 +3450,114 @@ def analyze_image(
     prompt
 ):
 
-    started = time.perf_counter()
-    if not gemini and not openrouter:
-        raise RuntimeError("Tidak ada provider vision GRATIS yang aktif.")
+    if not gemini:
+        raise RuntimeError(
+            "Gemini belum dikonfigurasi."
+        )
 
-    attempts = []
+    errors = []
 
-    if gemini:
-        try:
-            r = gemini.models.generate_content(
-                model=GEMINI_CHAT_MODEL,
-                contents=[
-                    types.Part.from_bytes(data=data, mime_type=mime),
-                    SYSTEM + "\n\n" + prompt,
-                ],
+    try:
+
+        r = gemini.models.generate_content(
+            model=GEMINI_CHAT_MODEL,
+            contents=[
+                types.Part.from_bytes(
+                    data=data,
+                    mime_type=mime,
+                ),
+                SYSTEM
+                + "\n\n"
+                + prompt,
+            ],
+        )
+
+        if r.text:
+
+            return (
+                r.text,
+                GEMINI_CHAT_MODEL,
             )
-            if r.text:
-                attempts.append({"provider": "gemini", "model": GEMINI_CHAT_MODEL, "status": "SUCCESS"})
-                return r.text, GEMINI_CHAT_MODEL, {
-                    "provider": "gemini",
-                    "provider_label": "Gemini",
-                    "model": GEMINI_CHAT_MODEL,
-                    "task": "vision",
-                    "status": "MAIN" if not attempts[:-1] else "FALLBACK",
-                    "elapsed": time.perf_counter() - started,
-                    "routes": attempts,
-                }
-            raise RuntimeError("jawaban kosong")
-        except Exception as e:
-            attempts.append({"provider": "gemini", "model": GEMINI_CHAT_MODEL, "status": "FAILED", "reason": _transparent_error_reason(e)})
+
+    except Exception as e:
+
+        errors.append(
+            "Gemini Vision: "
+            + str(e)[:220]
+        )
 
     if openrouter:
-        try:
-            b64 = base64.b64encode(data).decode()
-            content = [
-                {"type": "text", "text": SYSTEM + "\n\n" + prompt},
-                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-            ]
-            r = openrouter.chat.completions.create(
-                model=OPENROUTER_FREE_MODEL,
-                messages=[{"role": "user", "content": content}],
-                max_tokens=4096,
-            )
-            answer = r.choices[0].message.content or ""
-            if answer.strip():
-                selected = getattr(r, "model", None) or OPENROUTER_FREE_MODEL
-                attempts.append({"provider": "openrouter", "model": selected, "status": "SUCCESS"})
-                return answer, selected, {
-                    "provider": "openrouter",
-                    "provider_label": "OpenRouter Free",
-                    "model": selected,
-                    "task": "vision",
-                    "status": "FALLBACK" if attempts[:-1] else "MAIN",
-                    "elapsed": time.perf_counter() - started,
-                    "routes": attempts,
-                }
-            raise RuntimeError("jawaban kosong")
-        except Exception as e:
-            attempts.append({"provider": "openrouter", "model": OPENROUTER_FREE_MODEL, "status": "FAILED", "reason": _transparent_error_reason(e)})
 
-    detail = "\n".join(
-        f"• {_provider_label(a['provider'])}: {a.get('reason', a.get('status', 'UNKNOWN'))}"
-        for a in attempts
+        try:
+
+            b64 = base64.b64encode(
+                data
+            ).decode()
+
+            content = [
+
+                {
+                    "type": "text",
+                    "text":
+                        SYSTEM
+                        + "\n\n"
+                        + prompt,
+                },
+
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url":
+                            f"data:{mime};base64,{b64}"
+                    },
+                },
+            ]
+
+            r = (
+                openrouter
+                .chat
+                .completions
+                .create(
+                    model=OPENROUTER_FREE_MODEL,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": content,
+                        }
+                    ],
+                    max_tokens=4096,
+                )
+            )
+
+            answer = (
+                r.choices[0]
+                .message
+                .content
+                or ""
+            )
+
+            if answer.strip():
+
+                return (
+                    answer,
+                    getattr(
+                        r,
+                        "model",
+                        OPENROUTER_FREE_MODEL,
+                    ),
+                )
+
+        except Exception as e:
+
+            errors.append(
+                "OpenRouter Vision: "
+                + str(e)[:220]
+            )
+
+    raise RuntimeError(
+        "Semua provider vision gagal: "
+        + " | ".join(errors)
     )
-    raise RuntimeError("Semua provider vision GRATIS gagal.\n" + detail)
 
 
 # ============================================================
@@ -3234,44 +3570,69 @@ def analyze_video(
     prompt
 ):
 
-    started = time.perf_counter()
     if not gemini:
-        raise RuntimeError("Gemini diperlukan untuk video.")
+        raise RuntimeError(
+            "Gemini diperlukan untuk video."
+        )
 
     uploaded = gemini.files.upload(
-        file=types.Part.from_bytes(data=data, mime_type=mime)
+        file=types.Part.from_bytes(
+            data=data,
+            mime_type=mime,
+        )
     )
 
     for _ in range(60):
-        f = gemini.files.get(name=uploaded.name)
-        state = getattr(getattr(f, "state", None), "name", "")
+
+        f = gemini.files.get(
+            name=uploaded.name
+        )
+
+        state = getattr(
+            getattr(
+                f,
+                "state",
+                None
+            ),
+            "name",
+            "",
+        )
+
         if state == "ACTIVE":
+
             uploaded = f
+
             break
+
         if state == "FAILED":
-            raise RuntimeError("Gemini gagal memproses video.")
+
+            raise RuntimeError(
+                "Gemini gagal memproses video."
+            )
+
         time.sleep(2)
+
     else:
-        raise RuntimeError("Video belum siap diproses.")
 
-    result = gemini.models.generate_content(
-        model=GEMINI_CHAT_MODEL,
-        contents=[uploaded, SYSTEM + "\n\n" + prompt],
+        raise RuntimeError(
+            "Video belum siap diproses."
+        )
+
+    result = (
+        gemini
+        .models
+        .generate_content(
+            model=GEMINI_CHAT_MODEL,
+            contents=[
+                uploaded,
+                SYSTEM
+                + "\n\n"
+                + prompt,
+            ],
+        )
     )
-    answer = result.text or ""
-    if not answer.strip():
-        raise RuntimeError("Gemini mengembalikan jawaban video kosong.")
 
-    meta = {
-        "provider": "gemini",
-        "provider_label": "Gemini",
-        "model": GEMINI_CHAT_MODEL,
-        "task": "video",
-        "status": "MAIN",
-        "elapsed": time.perf_counter() - started,
-        "routes": [{"provider": "gemini", "model": GEMINI_CHAT_MODEL, "status": "SUCCESS"}],
-    }
-    return answer, meta
+    return result.text or ""
 
 
 # ============================================================
@@ -3551,7 +3912,7 @@ def command_arg(text):
 async def handle(update):
 
     # ========================================================
-    # INLINE MODEL PICKER CALLBACK
+    # INLINE MODEL PICKER (ADITIF)
     # ========================================================
     callback = update.get("callback_query")
     if callback:
@@ -3560,7 +3921,6 @@ async def handle(update):
         from_user = callback.get("from", {})
         uid = str(from_user.get("id", ""))
         chat_id = callback.get("message", {}).get("chat", {}).get("id")
-
         mode_map = {
             "ai_auto": "auto",
             "ai_nvidia_fast": "nvidia_fast",
@@ -3570,7 +3930,6 @@ async def handle(update):
             "ai_groq_fast": "groq_fast",
             "ai_groq_coding": "groq_coding",
             "ai_groq_reasoning": "groq_reasoning",
-            "ai_grok_free": "grok_free",
             "ai_gemini": "gemini",
             "ai_openrouter": "openrouter",
         }
@@ -3584,13 +3943,24 @@ async def handle(update):
                     })
                 except Exception:
                     pass
+            labels = {
+                "auto": "🔄 AUTO",
+                "nvidia_fast": "🟢 NVIDIA Fast",
+                "nvidia_coding": "💻 NVIDIA Coding",
+                "nvidia_technical": "🔧 NVIDIA Technical",
+                "nvidia_reasoning": "🧠 NVIDIA Reasoning",
+                "groq_fast": "⚡ Groq Fast",
+                "groq_coding": "💻 Groq Coding",
+                "groq_reasoning": "🧠 Groq Reasoning",
+                "gemini": "👁 Gemini",
+                "openrouter": "🌐 OpenRouter FREE",
+            }
             if chat_id:
-                label = ("🔄 AUTO" if mode_map[data] == "auto" else MANUAL_AI_MODES.get(mode_map[data], (None, None, None, mode_map[data]))[3])
                 await send_text(
                     chat_id,
-                    f"✅ Mode AI diubah ke: {label}\n\n"
-                    "Mode ini menjadi AI utama. Jika gagal/limit, "
-                    "bot tetap otomatis pindah ke provider GRATIS lain.",
+                    f"✅ Mode AI diubah ke: {labels[mode_map[data]]}\n\n"
+                    "AI pilihan menjadi provider utama. Jika gagal, "
+                    "routing/fallback lama tetap digunakan.",
                 )
         return
 
@@ -3755,7 +4125,7 @@ hasil material bukan pengganti desain engineer.
         "/model"
     ):
 
-        current_mode = user_ai_mode.get(str(uid), "auto")
+        current = user_ai_mode.get(str(uid), "auto")
         keyboard = {
             "inline_keyboard": [
                 [{"text": "🔄 AUTO", "callback_data": "ai_auto"}],
@@ -3763,30 +4133,35 @@ hasil material bukan pengganti desain engineer.
                 [{"text": "🔧 NVIDIA Technical", "callback_data": "ai_nvidia_technical"}, {"text": "🧠 NVIDIA Reasoning", "callback_data": "ai_nvidia_reasoning"}],
                 [{"text": "⚡ Groq Fast", "callback_data": "ai_groq_fast"}, {"text": "💻 Groq Coding", "callback_data": "ai_groq_coding"}],
                 [{"text": "🧠 Groq Reasoning", "callback_data": "ai_groq_reasoning"}],
-                [{"text": "🟣 Grok FREE", "callback_data": "ai_grok_free"}],
                 [{"text": "👁 Gemini", "callback_data": "ai_gemini"}, {"text": "🌐 OpenRouter FREE", "callback_data": "ai_openrouter"}],
             ]
         }
-
-        current_label = "🔄 AUTO" if current_mode == "auto" else MANUAL_AI_MODES.get(current_mode, (None,None,None,current_mode))[3]
+        labels = {
+            "auto": "🔄 AUTO",
+            "nvidia_fast": "🟢 NVIDIA Fast",
+            "nvidia_coding": "💻 NVIDIA Coding",
+            "nvidia_technical": "🔧 NVIDIA Technical",
+            "nvidia_reasoning": "🧠 NVIDIA Reasoning",
+            "groq_fast": "⚡ Groq Fast",
+            "groq_coding": "💻 Groq Coding",
+            "groq_reasoning": "🧠 Groq Reasoning",
+            "gemini": "👁 Gemini",
+            "openrouter": "🌐 OpenRouter FREE",
+        }
         status = (
-            f"🤖 MODE AI: {current_label}\n\n"
+            f"🤖 MODE AI: {labels.get(current, current)}\n\n"
             f"NVIDIA: {'✅ AKTIF' if nvidia else '❌ TIDAK AKTIF'}\n"
-            f"Groq: {'✅ AKTIF' if groq else '❌ TIDAK AKTIF'}\n"
-            f"Grok FREE: {'✅ AKTIF' if openrouter else '❌ TIDAK AKTIF'}\n"
             f"Gemini: {'✅ AKTIF' if gemini else '❌ TIDAK AKTIF'}\n"
+            f"Groq: {'✅ AKTIF' if groq else '❌ TIDAK AKTIF'}\n"
             f"OpenRouter FREE: {'✅ AKTIF' if openrouter else '❌ TIDAK AKTIF'}\n\n"
-            "Pilih AI/model utama. Fallback GRATIS tetap aktif.\n\n"
             f"NVIDIA: {NVIDIA_MODEL}\n"
-            f"Gemini: {GEMINI_CHAT_MODEL}\n"
+            f"Groq Fast: {GROQ_FAST_MODEL}\n"
             f"Groq Coding: {GROQ_CODING_MODEL}\n"
             f"Groq Reasoning: {GROQ_REASONING_MODEL}\n"
-            f"Groq Fast: {GROQ_FAST_MODEL}\n"
-            f"Grok FREE: {OPENROUTER_GROK_FREE_MODEL}\n"
+            f"Gemini: {GEMINI_CHAT_MODEL}\n"
             f"OpenRouter: {OPENROUTER_FREE_MODEL}\n\n"
             "💰 PAID MODEL ROUTING: DISABLED"
         )
-
         await tg(
             "sendMessage",
             {
@@ -3795,7 +4170,6 @@ hasil material bukan pengganti desain engineer.
                 "reply_markup": keyboard,
             },
         )
-
         return
 
     # ========================================================
@@ -3914,12 +4288,13 @@ Contoh:
                 else "video/mp4"
             )
 
-            answer, video_meta = await asyncio.to_thread(
-                analyze_video,
-                data,
-                mime,
-                caption or
-                """
+            answer = (
+                await asyncio.to_thread(
+                    analyze_video,
+                    data,
+                    mime,
+                    caption or
+                    """
 Analisa video ini secara detail.
 
 Jika terkait pekerjaan manufaktur,
@@ -3934,11 +4309,12 @@ kanopi, atau fabrikasi:
 
 Jangan mengarang ukuran yang tidak terlihat.
 """,
+                )
             )
 
             await send_text(
                 chat_id,
-                format_transparent_response(answer, video_meta),
+                answer,
             )
 
         except Exception as e:
@@ -4051,16 +4427,18 @@ sipil, atau produk custom:
 Jangan mengarang ukuran yang tidak terlihat.
 """
 
-            answer, model, vision_meta = await asyncio.to_thread(
-                analyze_image,
-                data,
-                mime,
-                prompt,
+            answer, model = (
+                await asyncio.to_thread(
+                    analyze_image,
+                    data,
+                    mime,
+                    prompt,
+                )
             )
 
             await send_text(
                 chat_id,
-                format_transparent_response(answer, vision_meta),
+                answer,
             )
 
             log.info(
@@ -4101,7 +4479,15 @@ Jangan mengarang ukuran yang tidak terlihat.
             },
         )
 
-        answer, meta = await asyncio.to_thread(
+        (
+            answer,
+            provider,
+            model,
+            task,
+            attempts,
+            elapsed,
+            status,
+        ) = await asyncio.to_thread(
             chat_router,
             uid,
             text,
@@ -4113,7 +4499,6 @@ Jangan mengarang ukuran yang tidak terlihat.
             text,
         )
 
-        # Simpan jawaban mentah agar header transparansi tidak ikut masuk memory.
         remember(
             uid,
             "assistant",
@@ -4122,7 +4507,20 @@ Jangan mengarang ukuran yang tidak terlihat.
 
         await save_persistent_memory(uid)
 
-        transparent_answer = format_transparent_response(answer, meta)
+        transparent_answer = _transparent_format(
+            answer,
+            "local" if provider == "Civil Calculator" else (
+                "nvidia" if provider.startswith("NVIDIA") else
+                "groq" if provider.startswith("Groq") else
+                "gemini" if provider.startswith("Gemini") else
+                "openrouter"
+            ),
+            model,
+            task,
+            "LOCAL" if provider == "Civil Calculator" else status,
+            elapsed,
+            attempts,
+        )
 
         await send_text(
             chat_id,
@@ -4130,13 +4528,10 @@ Jangan mengarang ukuran yang tidak terlihat.
         )
 
         log.info(
-            "CHAT DONE | task=%s | provider=%s | model=%s | status=%s | elapsed=%.2fs | routes=%s",
-            meta.get("task"),
-            meta.get("provider_label"),
-            meta.get("model"),
-            meta.get("status"),
-            meta.get("elapsed", 0.0),
-            meta.get("routes"),
+            "CHAT DONE | task=%s | provider=%s | model=%s",
+            task,
+            provider,
+            model,
         )
 
     except Exception as e:
@@ -4180,14 +4575,9 @@ async def root():
 
             "openrouter_free":
                 bool(openrouter),
-            "grok_free":
-                bool(openrouter),
 
             "groq_free_tier":
                 bool(groq),
-
-            "nvidia_free_trial":
-                bool(nvidia),
 
             "cloudflare_flux":
                 CLOUDFLARE_ENABLED,
@@ -4231,9 +4621,6 @@ async def root():
 
             "groq_fast":
                 GROQ_FAST_MODEL,
-
-            "nvidia":
-                NVIDIA_MODEL,
 
             "cloudflare_image":
                 CLOUDFLARE_IMAGE_MODEL,
