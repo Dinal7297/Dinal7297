@@ -47,13 +47,6 @@ GEMINI_IMAGE_MODEL = os.getenv(
     "gemini-2.5-flash-image"
 )
 
-# Model cadangan Gemini yang lebih hemat kuota gratis,
-# dipakai jika GEMINI_CHAT_MODEL kena rate limit / gagal.
-GEMINI_BACKUP_MODEL = os.getenv(
-    "GEMINI_BACKUP_MODEL",
-    "gemini-2.5-flash-lite"
-)
-
 GEMINI_VIDEO_MODEL = os.getenv(
     "GEMINI_VIDEO_MODEL",
     "veo-3.1-fast-generate-preview"
@@ -80,6 +73,16 @@ GROQ_CODING_MODEL = os.getenv(
     "GROQ_CODING_MODEL",
     "qwen/qwen3-32b"
 )
+
+# ------------------------------------------------------------
+# NVIDIA NIM / DeepSeek-V4-Flash-0731 (FREE TRIAL ENDPOINT)
+# ------------------------------------------------------------
+NVIDIA_KEY = os.getenv("NVIDIA_API_KEY", "")
+NVIDIA_MODEL = os.getenv(
+    "NVIDIA_MODEL",
+    "deepseek-ai/deepseek-v4-flash-0731",
+)
+NVIDIA_MAX_OUTPUT_TOKENS = int(os.getenv("NVIDIA_MAX_OUTPUT_TOKENS", "4096"))
 
 # ------------------------------------------------------------
 # MODEL CADANGAN TAMBAHAN (BARU)
@@ -458,6 +461,15 @@ groq = (
     else None
 )
 
+nvidia = (
+    OpenAI(
+        api_key=NVIDIA_KEY,
+        base_url="https://integrate.api.nvidia.com/v1",
+    )
+    if NVIDIA_KEY
+    else None
+)
+
 
 # ============================================================
 # MEMORY
@@ -465,6 +477,9 @@ groq = (
 
 memory = {}
 MAX_MEMORY = 20
+
+# Mode AI per pengguna: auto / nvidia / groq / gemini / openrouter
+user_ai_mode = {}
 
 # ============================================================
 # PERSISTENT MEMORY — SEPARATE GITHUB REPOSITORY
@@ -2249,14 +2264,12 @@ def call_openrouter(uid, text, task, model=None):
 # GEMINI
 # ============================================================
 
-def call_gemini(uid, text, task, model=None):
+def call_gemini(uid, text, task):
 
     if not gemini:
         raise RuntimeError(
             "GEMINI_API_KEY belum tersedia."
         )
-
-    use_model = model or GEMINI_CHAT_MODEL
 
     task_hint = {
 
@@ -2313,7 +2326,7 @@ jangan menyatakan aman tanpa perhitungan engineering.
     prompt += f"user: {text}"
 
     r = gemini.models.generate_content(
-        model=use_model,
+        model=GEMINI_CHAT_MODEL,
         contents=prompt,
     )
 
@@ -2324,7 +2337,59 @@ jangan menyatakan aman tanpa perhitungan engineering.
             "Gemini mengembalikan jawaban kosong."
         )
 
-    return answer, use_model
+    return answer, GEMINI_CHAT_MODEL
+
+
+# ============================================================
+# NVIDIA NIM / DEEPSEEK V4 FLASH
+# ============================================================
+
+def call_nvidia(uid, text, task, reasoning_effort=None):
+
+    if not nvidia:
+        raise RuntimeError("NVIDIA_API_KEY belum tersedia.")
+
+    effort = reasoning_effort
+    if effort is None:
+        effort = {
+            "reasoning": "max",
+            "math": "high",
+            "coding": "high",
+            "technical": "high",
+            "civil": "high",
+            "creative": "none",
+            "general": "none",
+        }.get(task, "none")
+
+    r = nvidia.chat.completions.create(
+        model=NVIDIA_MODEL,
+        messages=build_messages(
+            uid,
+            text,
+            task,
+            max_turns=MAX_CONTEXT_TURNS,
+            max_chars_per_item=MAX_CONTEXT_CHARS_PER_ITEM,
+        ),
+        temperature=1,
+        top_p=0.95,
+        max_tokens=NVIDIA_MAX_OUTPUT_TOKENS,
+        extra_body={
+            "chat_template_kwargs": {
+                "thinking": effort != "none",
+            },
+            "reasoning_effort": effort,
+        },
+    )
+
+    message = r.choices[0].message
+    answer = getattr(message, "content", None) or ""
+
+    if not answer.strip():
+        raise RuntimeError(
+            f"NVIDIA ({NVIDIA_MODEL}) mengembalikan jawaban kosong."
+        )
+
+    return answer, NVIDIA_MODEL
 
 
 # ============================================================
@@ -2426,25 +2491,62 @@ def _call_with_retry(fn, retries=1, base_delay=1.5):
 # SMART CHAT ROUTER
 # ============================================================
 
+def _provider_available(name):
+    return {
+        "nvidia": bool(nvidia),
+        "groq": bool(groq),
+        "gemini": bool(gemini),
+        "openrouter": bool(openrouter),
+    }.get(name, False)
+
+
+def _provider_call(name, uid, text, task):
+    if name == "nvidia":
+        return call_nvidia(uid, text, task)
+    if name == "groq":
+        return call_groq(uid, text, task)
+    if name == "gemini":
+        return call_gemini(uid, text, task)
+    if name == "openrouter":
+        return call_openrouter(uid, text, task, model=OPENROUTER_FREE_MODEL)
+    raise RuntimeError(f"Provider tidak dikenal: {name}")
+
+
+def _provider_label(name):
+    return {
+        "nvidia": "NVIDIA DeepSeek V4 Flash",
+        "groq": "Groq",
+        "gemini": "Gemini",
+        "openrouter": "OpenRouter Free",
+    }.get(name, name)
+
+
+def _auto_provider_order(task):
+    # NVIDIA menjadi otak utama untuk teks: ringan, coding, teknik,
+    # reasoning. Groq menjadi fallback utama, lalu OpenRouter/Gemini.
+    if task in ("reasoning", "math"):
+        return ["nvidia", "groq", "openrouter", "gemini"]
+    if task in ("coding", "technical", "civil"):
+        return ["nvidia", "groq", "openrouter", "gemini"]
+    return ["nvidia", "groq", "openrouter", "gemini"]
+
+
 def chat_router(uid, text):
 
     task = classify_task(text)
+    mode = user_ai_mode.get(str(uid), "auto")
 
     log.info(
-        "TASK=%s | text=%s",
+        "TASK=%s | MODE=%s | text=%s",
         task,
+        mode,
         text[:120],
     )
 
-    # Civil Calculator deterministic
+    # Civil Calculator deterministic: jangan buang quota AI untuk rumus
     if task == "civil":
-
-        civil_result = civil_calculator(
-            text
-        )
-
+        civil_result = civil_calculator(text)
         if civil_result:
-
             return (
                 civil_result,
                 "Civil Calculator",
@@ -2452,386 +2554,49 @@ def chat_router(uid, text):
                 task,
             )
 
-    if task == "technical":
-
-        # Prioritas: Groq (kuota harian besar & terpisah per model)
-        # -> OpenRouter -> Gemini.
-        providers = [
-            (
-                "Groq (gpt-oss-20b)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_FAST_MODEL,
-                ),
-            ),
-            (
-                "Groq (gpt-oss-120b)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_REASONING_MODEL,
-                ),
-            ),
-            (
-                "OpenRouter Free",
-                lambda: call_openrouter(
-                    uid,
-                    text,
-                    task
-                ),
-            ),
-            (
-                "Groq Cadangan (gpt-oss-20b)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_BACKUP_MODEL_1,
-                ),
-            ),
-            (
-                "Groq Cadangan (gpt-oss-120b)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_BACKUP_MODEL_2,
-                ),
-            ),
-            (
-                "Groq Cadangan (llama-3.1-8b-instant)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_BACKUP_MODEL_4,
-                ),
-            ),
-            (
-                "OpenRouter Cadangan",
-                lambda: call_openrouter(
-                    uid,
-                    text,
-                    task,
-                    model=OPENROUTER_BACKUP_MODEL,
-                ),
-            ),
-            (
-                "Gemini",
-                lambda: call_gemini(
-                    uid,
-                    text,
-                    task
-                ),
-            ),
-            (
-                "Gemini Flash-Lite (cadangan)",
-                lambda: call_gemini(
-                    uid,
-                    text,
-                    task,
-                    model=GEMINI_BACKUP_MODEL,
-                ),
-            ),
-        ]
-
-    elif task == "coding":
-
-        # Prioritas: model coding khusus dulu, lalu model Groq
-        # lain (kuota terpisah), baru provider lain.
-        providers = [
-            (
-                "Groq (qwen3-32b)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_CODING_MODEL,
-                ),
-            ),
-            (
-                "Groq (gpt-oss-120b)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_REASONING_MODEL,
-                ),
-            ),
-            (
-                "Groq (gpt-oss-20b)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_FAST_MODEL,
-                ),
-            ),
-            (
-                "OpenRouter Free",
-                lambda: call_openrouter(
-                    uid,
-                    text,
-                    task
-                ),
-            ),
-            (
-                "Groq Cadangan (qwen3-32b)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_BACKUP_MODEL_3,
-                ),
-            ),
-            (
-                "Groq Cadangan (gpt-oss-120b)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_BACKUP_MODEL_2,
-                ),
-            ),
-            (
-                "OpenRouter Cadangan",
-                lambda: call_openrouter(
-                    uid,
-                    text,
-                    task,
-                    model=OPENROUTER_BACKUP_MODEL,
-                ),
-            ),
-            (
-                "Gemini",
-                lambda: call_gemini(
-                    uid,
-                    text,
-                    task
-                ),
-            ),
-            (
-                "Gemini Flash-Lite (cadangan)",
-                lambda: call_gemini(
-                    uid,
-                    text,
-                    task,
-                    model=GEMINI_BACKUP_MODEL,
-                ),
-            ),
-        ]
-
-    elif task in (
-        "reasoning",
-        "math",
-    ):
-
-        providers = [
-            (
-                "Groq (gpt-oss-120b)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_REASONING_MODEL,
-                ),
-            ),
-            (
-                "Groq (gpt-oss-20b)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_FAST_MODEL,
-                ),
-            ),
-            (
-                "OpenRouter Free",
-                lambda: call_openrouter(
-                    uid,
-                    text,
-                    task
-                ),
-            ),
-            (
-                "Groq Cadangan (gpt-oss-120b)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_BACKUP_MODEL_2,
-                ),
-            ),
-            (
-                "Groq Cadangan (llama-3.1-8b-instant)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_BACKUP_MODEL_4,
-                ),
-            ),
-            (
-                "OpenRouter Cadangan",
-                lambda: call_openrouter(
-                    uid,
-                    text,
-                    task,
-                    model=OPENROUTER_BACKUP_MODEL,
-                ),
-            ),
-            (
-                "Gemini",
-                lambda: call_gemini(
-                    uid,
-                    text,
-                    task
-                ),
-            ),
-            (
-                "Gemini Flash-Lite (cadangan)",
-                lambda: call_gemini(
-                    uid,
-                    text,
-                    task,
-                    model=GEMINI_BACKUP_MODEL,
-                ),
-            ),
-        ]
-
+    if mode == "auto":
+        order = _auto_provider_order(task)
     else:
-
-        # general / creative: prioritaskan model dengan kuota
-        # harian paling besar supaya jarang kena limit.
-        providers = [
-            (
-                "Groq (gpt-oss-20b)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_FAST_MODEL,
-                ),
-            ),
-            (
-                "Groq (gpt-oss-120b)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_REASONING_MODEL,
-                ),
-            ),
-            (
-                "OpenRouter Free",
-                lambda: call_openrouter(
-                    uid,
-                    text,
-                    task
-                ),
-            ),
-            (
-                "Groq Cadangan (llama-3.1-8b-instant)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_BACKUP_MODEL_4,
-                ),
-            ),
-            (
-                "Groq Cadangan (gemma2-9b-it)",
-                lambda: call_groq(
-                    uid,
-                    text,
-                    task,
-                    model=GROQ_BACKUP_MODEL_5,
-                ),
-            ),
-            (
-                "OpenRouter Cadangan",
-                lambda: call_openrouter(
-                    uid,
-                    text,
-                    task,
-                    model=OPENROUTER_BACKUP_MODEL,
-                ),
-            ),
-            (
-                "Gemini",
-                lambda: call_gemini(
-                    uid,
-                    text,
-                    task
-                ),
-            ),
-            (
-                "Gemini Flash-Lite (cadangan)",
-                lambda: call_gemini(
-                    uid,
-                    text,
-                    task,
-                    model=GEMINI_BACKUP_MODEL,
-                ),
-            ),
-        ]
+        # Manual mode = provider pilihan utama, tetapi tetap fallback.
+        fallback = ["nvidia", "groq", "openrouter", "gemini"]
+        order = [mode] + [x for x in fallback if x != mode]
 
     errors = []
 
-    for provider_name, fn in providers:
-
+    for provider_name in order:
+        if not _provider_available(provider_name):
+            continue
         try:
-
             log.info(
-                "TRY PROVIDER | task=%s | provider=%s",
-                task,
-                provider_name,
+                "TRY PROVIDER | task=%s | mode=%s | provider=%s",
+                task, mode, provider_name,
             )
-
             answer, model = _call_with_retry(
-                fn,
+                lambda p=provider_name: _provider_call(p, uid, text, task),
                 retries=1,
             )
-
             if not answer.strip():
-                raise RuntimeError(
-                    "Provider mengembalikan jawaban kosong."
-                )
-
+                raise RuntimeError("Provider mengembalikan jawaban kosong.")
             log.info(
-                "CHAT SUCCESS | task=%s | provider=%s | model=%s",
-                task,
-                provider_name,
-                model,
+                "CHAT SUCCESS | task=%s | mode=%s | provider=%s | model=%s",
+                task, mode, provider_name, model,
             )
-
             return (
                 answer,
-                provider_name,
+                _provider_label(provider_name),
                 model,
                 task,
             )
-
         except Exception as e:
-
             error_text = str(e)
-
-            errors.append(
-                f"{provider_name}: {error_text[:300]}"
-            )
-
+            errors.append(f"{_provider_label(provider_name)}: {error_text[:300]}")
             log.warning(
                 "PROVIDER FAILED | provider=%s | error=%s",
-                provider_name,
-                error_text[:300],
+                provider_name, error_text[:300],
             )
 
     raise RuntimeError(
-        "Semua provider AI GRATIS gagal. "
-        + " | ".join(errors)
+        "Semua provider AI GRATIS gagal. " + " | ".join(errors)
     )
 
 
@@ -3740,6 +3505,50 @@ def command_arg(text):
 
 async def handle(update):
 
+    # ========================================================
+    # INLINE MODEL PICKER CALLBACK
+    # ========================================================
+    callback = update.get("callback_query")
+    if callback:
+        callback_id = callback.get("id")
+        data = callback.get("data", "")
+        from_user = callback.get("from", {})
+        uid = str(from_user.get("id", ""))
+        chat_id = callback.get("message", {}).get("chat", {}).get("id")
+
+        mode_map = {
+            "ai_auto": "auto",
+            "ai_nvidia": "nvidia",
+            "ai_groq": "groq",
+            "ai_gemini": "gemini",
+            "ai_openrouter": "openrouter",
+        }
+        if data in mode_map:
+            user_ai_mode[uid] = mode_map[data]
+            if callback_id:
+                try:
+                    await tg("answerCallbackQuery", {
+                        "callback_query_id": callback_id,
+                        "text": f"Mode AI: {mode_map[data].upper()}",
+                    })
+                except Exception:
+                    pass
+            if chat_id:
+                label = {
+                    "auto": "🔄 AUTO",
+                    "nvidia": "🟢 NVIDIA DeepSeek V4 Flash",
+                    "groq": "⚡ Groq",
+                    "gemini": "👁 Gemini",
+                    "openrouter": "🌐 OpenRouter Free",
+                }[mode_map[data]]
+                await send_text(
+                    chat_id,
+                    f"✅ Mode AI diubah ke: {label}\n\n"
+                    "Mode ini menjadi AI utama. Jika gagal/limit, "
+                    "bot tetap otomatis pindah ke provider GRATIS lain.",
+                )
+        return
+
     message = update.get(
         "message"
     )
@@ -3863,12 +3672,6 @@ Kirim foto dengan caption:
 /pekerjaan <kategori> <lokasi>
 Contoh: /pekerjaan kanopi cibinong
 
-🧠 AUTO JUDUL + CAPTION MULTI-PLATFORM
-Kirim foto/video dengan caption:
-/caption <nama produk>
-Contoh: /caption kanopi minimalis
-(Judul + caption Instagram/TikTok/Facebook/WA sekaligus)
-
 ⚠️ Untuk struktur:
 hasil material bukan pengganti desain engineer.
 """,
@@ -3907,73 +3710,50 @@ hasil material bukan pengganti desain engineer.
         "/model"
     ):
 
-        await send_text(
-            chat_id,
-            f"""
-🤖 STATUS SUPER AI AGENT
+        current_mode = user_ai_mode.get(str(uid), "auto")
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "🔄 AUTO", "callback_data": "ai_auto"},
+                    {"text": "🟢 NVIDIA", "callback_data": "ai_nvidia"},
+                ],
+                [
+                    {"text": "⚡ Groq", "callback_data": "ai_groq"},
+                    {"text": "👁 Gemini", "callback_data": "ai_gemini"},
+                ],
+                [
+                    {"text": "🌐 OpenRouter FREE", "callback_data": "ai_openrouter"},
+                ],
+            ]
+        }
 
-Gemini:
-{'✅ AKTIF' if gemini else '❌ TIDAK AKTIF'}
+        status = (
+            f"🤖 MODE AI: {current_mode.upper()}\n\n"
+            f"NVIDIA: {'✅ AKTIF' if nvidia else '❌ TIDAK AKTIF'}\n"
+            f"Groq: {'✅ AKTIF' if groq else '❌ TIDAK AKTIF'}\n"
+            f"Gemini: {'✅ AKTIF' if gemini else '❌ TIDAK AKTIF'}\n"
+            f"OpenRouter FREE: {'✅ AKTIF' if openrouter else '❌ TIDAK AKTIF'}\n\n"
+            "Pilih AI utama di bawah. Fallback GRATIS tetap aktif.\n\n"
+            "🟢 NVIDIA = chat, coding, teknik, reasoning\n"
+            "⚡ Groq = fallback / mode manual\n"
+            "👁 Gemini = gambar & video\n"
+            "🌐 OpenRouter = fallback FREE\n\n"
+            f"NVIDIA model: {NVIDIA_MODEL}\n"
+            f"Gemini model: {GEMINI_CHAT_MODEL}\n"
+            f"Groq Coding: {GROQ_CODING_MODEL}\n"
+            f"Groq Reasoning: {GROQ_REASONING_MODEL}\n"
+            f"Groq Fast: {GROQ_FAST_MODEL}\n"
+            f"OpenRouter: {OPENROUTER_FREE_MODEL}\n\n"
+            "💰 PAID MODEL ROUTING: DISABLED"
+        )
 
-OpenRouter FREE:
-{'✅ AKTIF' if openrouter else '❌ TIDAK AKTIF'}
-
-Groq FREE:
-{'✅ AKTIF' if groq else '❌ TIDAK AKTIF'}
-
-🏗️ CIVIL CALCULATOR
-
-✅ ACTIVE
-Local Calculation Engine
-
-Kemampuan:
-
-• Beton
-• Sloof
-• Kolom
-• Balok
-• Plat beton
-• Footplat
-• Pondasi
-• Batu kali
-• Dinding bata
-• Batako
-• Plester
-• Acian
-• Galian
-• Urugan
-• Besi
-• Berat besi
-• Jumlah batang besi
-
-🎨 GENERATE GAMBAR
-
-Cloudflare Flux:
-{'✅ AKTIF' if CLOUDFLARE_ENABLED else '❌ TIDAK AKTIF'}
-
-Pollinations (fallback):
-{'✅ AKTIF' if POLLINATIONS_ENABLED else '❌ TIDAK AKTIF'}
-
-🧠 MODEL
-
-Gemini:
-{GEMINI_CHAT_MODEL}
-
-OpenRouter:
-{OPENROUTER_FREE_MODEL}
-
-Groq Coding:
-{GROQ_CODING_MODEL}
-
-Groq Reasoning:
-{GROQ_REASONING_MODEL}
-
-Groq Fast:
-{GROQ_FAST_MODEL}
-
-💰 PAID MODEL ROUTING
-DISABLED
-""",
+        await tg(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": clean_telegram_text(status),
+                "reply_markup": keyboard,
+            },
         )
 
         return
@@ -4052,108 +3832,6 @@ Contoh:
                 chat_id,
                 "❌ Generate gambar gagal.\n"
                 + str(e)[:700],
-            )
-
-        return
-
-    # ========================================================
-    # AUTO JUDUL + CAPTION MULTI-PLATFORM (foto/video + "/caption <nama produk>")
-    # ========================================================
-    # Kirim foto ATAU video dengan caption diawali "/caption", format:
-    # /caption <nama produk>
-    # Contoh: /caption kanopi minimalis
-    #
-    # Bot akan melihat foto/videonya (Gemini Vision/Video, sudah ada),
-    # lalu membuat judul + caption yang disesuaikan gaya tiap platform
-    # (Instagram, TikTok, Facebook, WhatsApp) supaya menarik & mudah FYP.
-
-    if (message.get("photo") or message.get("video")) and caption.strip().lower().startswith("/caption"):
-
-        produk = command_arg(caption.strip())
-
-        if not produk:
-            await send_text(
-                chat_id,
-                "Sebutkan nama produknya juga ya.\n\n"
-                "Kirim foto/video dengan caption:\n"
-                "/caption <nama produk>\n\n"
-                "Contoh:\n/caption kanopi minimalis",
-            )
-            return
-
-        await send_text(
-            chat_id,
-            f"🧠 Menganalisis {'video' if message.get('video') else 'foto'} "
-            f"& menyusun judul + caption untuk \"{produk}\"...",
-        )
-
-        caption_prompt = f"""
-Kamu adalah social media copywriter & marketing strategist untuk
-bengkel fabrikasi besi "DESIGN MANUFAKTUR" (kanopi, pagar, pintu,
-teralis, railing, tenda, custom fabrikasi besi, area Cibinong/Bogor).
-
-Lihat gambar/video yang dikirim. Produk yang dipromosikan: "{produk}".
-
-Buat paket promosi siap pakai dalam Bahasa Indonesia, dengan struktur
-PERSIS seperti ini (pakai heading ini apa adanya):
-
-🎯 JUDUL/HOOK
-(1 kalimat pendek super menarik, bikin orang berhenti scroll)
-
-📸 CAPTION INSTAGRAM
-(gaya estetik, 2-4 kalimat, boleh emoji secukupnya, sebutkan
-keunggulan produk yang TERLIHAT di foto/video, tutup dengan
-call-to-action untuk DM/hubungi. Sertakan 6-8 hashtag relevan
-di baris terpisah paling bawah.)
-
-🎵 CAPTION TIKTOK
-(gaya santai & FYP-friendly, kalimat pertama HARUS hook kuat untuk
-3 detik pertama, singkat-singkat, boleh pakai emoji, sebutkan
-progress pengerjaan/hasil akhir, tutup CTA "cek link di bio /
-komen order". Sertakan 5-7 hashtag campuran niche (kanopi, pagar,
-bengkel las, dll) + hashtag umum yang lagi rame di kategori
-konstruksi/rumah.)
-
-📘 CAPTION FACEBOOK
-(gaya lebih naratif/testimoni, 3-5 kalimat, cocok untuk audiens
-lokal Cibinong/Bogor yang cari jasa, sebutkan proses pengerjaan
-dan kualitas, tutup dengan ajakan hubungi nomor/WA.)
-
-💬 CAPTION WHATSAPP STATUS
-(sangat singkat, 1-2 kalimat + emoji, langsung closing, cocok
-ditempel di status WA Business.)
-
-Aturan penting:
-- Jangan mengarang detail yang tidak terlihat di gambar/video.
-- Jangan pakai bahasa yang terdengar seperti template AI generik.
-- Sesuaikan nada bicara untuk UMKM bengkel las lokal, bukan brand besar.
-- Jangan beri disclaimer atau catatan tambahan di luar struktur di atas.
-"""
-
-        try:
-            if message.get("video"):
-                data, path = await tg_file(message["video"]["file_id"])
-                if len(data) > (20 * 1024 * 1024):
-                    await send_text(chat_id, "❌ Video lebih dari 20 MB.")
-                    return
-                mime = (
-                    "video/quicktime"
-                    if path.lower().endswith(".mov")
-                    else mimetypes.guess_type(path)[0] or "video/mp4"
-                )
-                hasil = await asyncio.to_thread(analyze_video, data, mime, caption_prompt)
-            else:
-                data, path = await tg_file(message["photo"][-1]["file_id"])
-                mime = mimetypes.guess_type(path)[0] or "image/jpeg"
-                hasil, _ = analyze_image(data, mime, caption_prompt)
-
-            await send_text(chat_id, hasil or "❌ Tidak ada hasil dari AI.")
-
-        except Exception as e:
-            log.exception("caption generator failed")
-            await send_text(
-                chat_id,
-                "❌ Gagal membuat judul & caption.\n" + str(e)[:700],
             )
 
         return
@@ -4469,6 +4147,9 @@ async def root():
             "groq_free_tier":
                 bool(groq),
 
+            "nvidia_free_trial":
+                bool(nvidia),
+
             "cloudflare_flux":
                 CLOUDFLARE_ENABLED,
 
@@ -4511,6 +4192,9 @@ async def root():
 
             "groq_fast":
                 GROQ_FAST_MODEL,
+
+            "nvidia":
+                NVIDIA_MODEL,
 
             "cloudflare_image":
                 CLOUDFLARE_IMAGE_MODEL,
