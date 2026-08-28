@@ -465,7 +465,7 @@ nvidia = (
     OpenAI(
         api_key=NVIDIA_KEY,
         base_url="https://integrate.api.nvidia.com/v1",
-        timeout=18.0,
+        timeout=30.0,
         max_retries=0,
     )
     if NVIDIA_KEY
@@ -2363,9 +2363,9 @@ def call_nvidia(uid, text, task, reasoning_effort=None, model=None):
             "general": "none",
         }.get(task, "none")
 
-    # NVIDIA NIM current API documents reasoning_effort as a TOP-LEVEL
-    # parameter (none/high/max). The older nested chat_template_kwargs
-    # form can cause validation/timeout problems on some deployments.
+    # Gunakan format NVIDIA yang sama dengan contoh API key/user yang sudah
+    # terbukti dipakai: reasoning_effort dikirim melalui chat_template_kwargs.
+    # Ini sengaja tidak mengubah provider lain.
     r = nvidia.chat.completions.create(
         model=(model or NVIDIA_MODEL),
         messages=build_messages(
@@ -2378,7 +2378,12 @@ def call_nvidia(uid, text, task, reasoning_effort=None, model=None):
         temperature=1,
         top_p=0.95,
         max_tokens=NVIDIA_MAX_OUTPUT_TOKENS,
-        reasoning_effort=effort,
+        extra_body={
+            "chat_template_kwargs": {
+                "thinking": effort != "none",
+                "reasoning_effort": effort,
+            }
+        },
         stream=False,
     )
 
