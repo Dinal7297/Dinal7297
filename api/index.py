@@ -47,6 +47,13 @@ GEMINI_IMAGE_MODEL = os.getenv(
     "gemini-2.5-flash-image"
 )
 
+# Model cadangan Gemini yang lebih hemat kuota gratis,
+# dipakai jika GEMINI_CHAT_MODEL kena rate limit / gagal.
+GEMINI_BACKUP_MODEL = os.getenv(
+    "GEMINI_BACKUP_MODEL",
+    "gemini-2.5-flash-lite"
+)
+
 GEMINI_VIDEO_MODEL = os.getenv(
     "GEMINI_VIDEO_MODEL",
     "veo-3.1-fast-generate-preview"
@@ -681,95 +688,7 @@ async def _github_put_file(repo, path, content_bytes, message, token, branch, sh
     return resp.json()
 
 
-def _generate_seo_pekerjaan_text(category_label, location_label):
-    """
-    Minta AI menyusun judul/deskripsi/isi yang mempertimbangkan kata kunci
-    yang wajar dicari orang di Google (riset kata kunci sederhana ala SEO
-    copywriter), TANPA keyword stuffing. Coba Gemini -> Groq -> OpenRouter
-    (langsung, tidak memakai riwayat memory user). Kalau semua gagal,
-    lempar exception supaya caller fallback ke template deterministik lama.
-    """
-    prompt = f"""
-Kamu adalah SEO copywriter untuk website bengkel fabrikasi besi
-"DESIGN MANUFAKTUR" (kanopi, pagar besi, pintu besi, teralis,
-railing, tenda, custom fabrikasi besi).
-
-Tugas: buat konten untuk 1 halaman portofolio baru,
-kategori "{category_label}", lokasi "{location_label}".
-
-Pikirkan dulu kombinasi kata kunci yang WAJAR dicari orang di Google
-untuk kebutuhan ini (misalnya kombinasi kata seperti jasa, tukang,
-harga, custom, terdekat, nama lokasi, dsb) — tapi jangan sampai
-terdengar dipaksakan atau seperti keyword stuffing. Tulisan harus
-tetap terbaca natural seperti manusia menulis, bukan robot SEO.
-
-Balas HANYA JSON valid (tanpa markdown code fence, tanpa teks lain
-di luar JSON), persis struktur berikut:
-
-{{
-  "title": "judul halaman, mengandung kategori+lokasi, natural, maksimal 65 karakter",
-  "description": "1-2 kalimat ringkasan untuk meta description & cuplikan kartu, maksimal 155 karakter",
-  "content_html": "2 paragraf HTML <p>...</p><p>...</p> tentang proses pengerjaan (fabrikasi, pengelasan, perakitan, finishing, pemasangan), kualitas, dan lokasi"
-}}
-"""
-
-    errors = []
-
-    if gemini:
-        try:
-            r = gemini.models.generate_content(
-                model=GEMINI_CHAT_MODEL,
-                contents=prompt,
-            )
-            if r.text and r.text.strip():
-                return r.text.strip()
-        except Exception as e:
-            errors.append(f"Gemini: {str(e)[:150]}")
-
-    if groq:
-        try:
-            r = groq.chat.completions.create(
-                model=GROQ_FAST_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=700,
-            )
-            answer = r.choices[0].message.content or ""
-            if answer.strip():
-                return answer.strip()
-        except Exception as e:
-            errors.append(f"Groq: {str(e)[:150]}")
-
-    if openrouter:
-        try:
-            r = openrouter.chat.completions.create(
-                model=OPENROUTER_FREE_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=700,
-            )
-            answer = r.choices[0].message.content or ""
-            if answer.strip():
-                return answer.strip()
-        except Exception as e:
-            errors.append(f"OpenRouter: {str(e)[:150]}")
-
-    raise RuntimeError("Semua provider AI gagal: " + " | ".join(errors))
-
-
-def _parse_seo_json(raw_text):
-    """Bersihkan kemungkinan code-fence markdown, lalu parse JSON."""
-    cleaned = raw_text.strip()
-    cleaned = re.sub(r"^```(json)?", "", cleaned).strip()
-    cleaned = re.sub(r"```$", "", cleaned).strip()
-    data = json.loads(cleaned)
-    title = str(data.get("title", "")).strip()
-    description = str(data.get("description", "")).strip()
-    content_html = str(data.get("content_html", "")).strip()
-    if not (title and description and content_html):
-        raise ValueError("JSON SEO tidak lengkap.")
-    return title, description, content_html
-
-
-def _build_pekerjaan_entry(category_raw, location_raw, image_path, seo=None):
+def _build_pekerjaan_entry(category_raw, location_raw, image_path):
     category_slug = CATEGORY_FOLDER_MAP.get(
         category_raw.strip().lower(), _slugify(category_raw)
     )
@@ -781,23 +700,19 @@ def _build_pekerjaan_entry(category_raw, location_raw, image_path, seo=None):
     today = time.strftime("%d %B %Y")
     today_iso = time.strftime("%Y-%m-%d")
 
-    if seo:
-        title, description, content = seo
-    else:
-        # Fallback template deterministik (dipakai kalau AI SEO gagal/tidak tersedia)
-        title = f"Pembuatan {category_label} di {location_label}"
-        description = (
-            f"Hasil pekerjaan pembuatan dan pemasangan {category_label.lower()} "
-            f"oleh DESIGN MANUFAKTUR di {location_label}."
-        )
-        content = (
-            f"<p>DESIGN MANUFAKTUR mengerjakan pembuatan {category_label.lower()} "
-            f"sesuai kebutuhan pelanggan. Pekerjaan meliputi proses fabrikasi, "
-            f"pengelasan, perakitan, finishing, dan pemasangan.</p>"
-            f"<p>Proyek ini dikerjakan untuk kebutuhan bangunan di wilayah "
-            f"{location_label}. Setiap pekerjaan dibuat berdasarkan ukuran dan "
-            f"kebutuhan di lokasi.</p>"
-        )
+    title = f"Pembuatan {category_label} di {location_label}"
+    description = (
+        f"Hasil pekerjaan pembuatan dan pemasangan {category_label.lower()} "
+        f"oleh DESIGN MANUFAKTUR di {location_label}."
+    )
+    content = (
+        f"<p>DESIGN MANUFAKTUR mengerjakan pembuatan {category_label.lower()} "
+        f"sesuai kebutuhan pelanggan. Pekerjaan meliputi proses fabrikasi, "
+        f"pengelasan, perakitan, finishing, dan pemasangan.</p>"
+        f"<p>Proyek ini dikerjakan untuk kebutuhan bangunan di wilayah "
+        f"{location_label}. Setiap pekerjaan dibuat berdasarkan ukuran dan "
+        f"kebutuhan di lokasi.</p>"
+    )
 
     return {
         "slug": slug,
@@ -830,21 +745,7 @@ async def upload_pekerjaan_from_photo(photo_bytes, category_raw, location_raw):
     filename_preview = f"{_slugify(category_raw)}-{_slugify(location_raw)}-{str(int(time.time()))[-6:]}.jpg"
     image_path = f"/assets/pekerjaan/{category_slug_preview}/images/{filename_preview}"
 
-    # Coba susun judul/deskripsi/isi yang mempertimbangkan kata kunci SEO
-    # lewat AI. Kalau gagal (AI down / respons tidak valid), otomatis
-    # fallback ke template deterministik lama supaya fitur tetap jalan.
-    seo = None
-    try:
-        category_label_preview = category_raw.strip().title()
-        location_label_preview = location_raw.strip().title()
-        raw_seo_text = await asyncio.to_thread(
-            _generate_seo_pekerjaan_text, category_label_preview, location_label_preview
-        )
-        seo = _parse_seo_json(raw_seo_text)
-    except Exception as e:
-        log.warning("SEO generation gagal, pakai template biasa | %s", str(e)[:300])
-
-    entry, category_slug = _build_pekerjaan_entry(category_raw, location_raw, image_path, seo=seo)
+    entry, category_slug = _build_pekerjaan_entry(category_raw, location_raw, image_path)
     # pastikan filename di entry & file yang diupload konsisten
     filename = image_path.split("/")[-1]
     github_image_path = f"assets/pekerjaan/{category_slug}/images/{filename}"
@@ -2348,12 +2249,14 @@ def call_openrouter(uid, text, task, model=None):
 # GEMINI
 # ============================================================
 
-def call_gemini(uid, text, task):
+def call_gemini(uid, text, task, model=None):
 
     if not gemini:
         raise RuntimeError(
             "GEMINI_API_KEY belum tersedia."
         )
+
+    use_model = model or GEMINI_CHAT_MODEL
 
     task_hint = {
 
@@ -2410,7 +2313,7 @@ jangan menyatakan aman tanpa perhitungan engineering.
     prompt += f"user: {text}"
 
     r = gemini.models.generate_content(
-        model=GEMINI_CHAT_MODEL,
+        model=use_model,
         contents=prompt,
     )
 
@@ -2421,7 +2324,7 @@ jangan menyatakan aman tanpa perhitungan engineering.
             "Gemini mengembalikan jawaban kosong."
         )
 
-    return answer, GEMINI_CHAT_MODEL
+    return answer, use_model
 
 
 # ============================================================
@@ -2624,6 +2527,15 @@ def chat_router(uid, text):
                     task
                 ),
             ),
+            (
+                "Gemini Flash-Lite (cadangan)",
+                lambda: call_gemini(
+                    uid,
+                    text,
+                    task,
+                    model=GEMINI_BACKUP_MODEL,
+                ),
+            ),
         ]
 
     elif task == "coding":
@@ -2701,6 +2613,15 @@ def chat_router(uid, text):
                     task
                 ),
             ),
+            (
+                "Gemini Flash-Lite (cadangan)",
+                lambda: call_gemini(
+                    uid,
+                    text,
+                    task,
+                    model=GEMINI_BACKUP_MODEL,
+                ),
+            ),
         ]
 
     elif task in (
@@ -2770,6 +2691,15 @@ def chat_router(uid, text):
                     task
                 ),
             ),
+            (
+                "Gemini Flash-Lite (cadangan)",
+                lambda: call_gemini(
+                    uid,
+                    text,
+                    task,
+                    model=GEMINI_BACKUP_MODEL,
+                ),
+            ),
         ]
 
     else:
@@ -2836,6 +2766,15 @@ def chat_router(uid, text):
                     uid,
                     text,
                     task
+                ),
+            ),
+            (
+                "Gemini Flash-Lite (cadangan)",
+                lambda: call_gemini(
+                    uid,
+                    text,
+                    task,
+                    model=GEMINI_BACKUP_MODEL,
                 ),
             ),
         ]
