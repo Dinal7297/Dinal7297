@@ -465,6 +465,8 @@ nvidia = (
     OpenAI(
         api_key=NVIDIA_KEY,
         base_url="https://integrate.api.nvidia.com/v1",
+        timeout=25.0,
+        max_retries=0,
     )
     if NVIDIA_KEY
     else None
@@ -2373,11 +2375,14 @@ def call_nvidia(uid, text, task, reasoning_effort=None, model=None):
         temperature=1,
         top_p=0.95,
         max_tokens=NVIDIA_MAX_OUTPUT_TOKENS,
+        # NVIDIA's official example puts reasoning_effort INSIDE
+        # chat_template_kwargs. Keeping the exact structure prevents
+        # 400/422 errors from the NIM endpoint.
         extra_body={
             "chat_template_kwargs": {
                 "thinking": effort != "none",
+                "reasoning_effort": effort,
             },
-            "reasoning_effort": effort,
         },
     )
 
@@ -2576,7 +2581,8 @@ def chat_router(uid, text):
         except Exception as e:
             errors.append(f"{_provider_label(provider_name)}: {str(e)[:300]}")
 
-    raise RuntimeError("Semua provider AI GRATIS gagal. " + " | ".join(errors))
+    detail = "\n".join(f"• {e}" for e in errors)
+    raise RuntimeError("Semua provider AI GRATIS gagal.\n" + detail)
 
 # ============================================================
 # TELEGRAM API
