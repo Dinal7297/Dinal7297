@@ -75,19 +75,6 @@ GROQ_CODING_MODEL = os.getenv(
 )
 
 # ------------------------------------------------------------
-# NVIDIA NIM / DeepSeek-V4-Flash-0731
-# ADITIF: provider baru, provider lama tidak diubah.
-# ------------------------------------------------------------
-NVIDIA_KEY = os.getenv("NVIDIA_API_KEY", "")
-NVIDIA_MODEL = os.getenv(
-    "NVIDIA_MODEL",
-    "deepseek-ai/deepseek-v4-flash-0731",
-)
-NVIDIA_MAX_OUTPUT_TOKENS = int(
-    os.getenv("NVIDIA_MAX_OUTPUT_TOKENS", "16384")
-)
-
-# ------------------------------------------------------------
 # MODEL CADANGAN TAMBAHAN (BARU)
 # ------------------------------------------------------------
 # Tidak dibaca dari env yang mungkin salah/sudah usang di hosting.
@@ -464,17 +451,6 @@ groq = (
     else None
 )
 
-nvidia = (
-    OpenAI(
-        api_key=NVIDIA_KEY,
-        base_url="https://integrate.api.nvidia.com/v1",
-        timeout=60.0,
-        max_retries=0,
-    )
-    if NVIDIA_KEY
-    else None
-)
-
 
 # ============================================================
 # MEMORY
@@ -483,8 +459,44 @@ nvidia = (
 memory = {}
 MAX_MEMORY = 20
 
-# Mode AI per pengguna. Default tetap AUTO sehingga perilaku lama tidak berubah.
+# ============================================================
+# PEMILIHAN AI MANUAL + TRANSPARANSI (BARU — ADITIF)
+# ============================================================
+# Tidak menghapus/mengubah sistem smart router yang sudah ada.
+# Fitur ini hanya menambahkan:
+#   1) Cara user memaksa pakai 1 provider tertentu (/ai groq, dst)
+#   2) Info di setiap jawaban: AI mana yang berhasil / gagal.
+
+AI_MODE_AUTO = "auto"
+
+AI_MODE_CHOICES = {
+    "auto": "auto",
+    "otomatis": "auto",
+    "gemini": "gemini",
+    "groq": "groq",
+    "openrouter": "openrouter",
+    "open router": "openrouter",
+    "or": "openrouter",
+}
+
+AI_MODE_LABELS = {
+    "auto": "🔁 Otomatis (Smart Router + fallback)",
+    "gemini": "🔒 Manual → Gemini",
+    "groq": "🔒 Manual → Groq",
+    "openrouter": "🔒 Manual → OpenRouter",
+}
+
+# uid(str) -> "auto" | "gemini" | "groq" | "openrouter"
 user_ai_mode = {}
+
+
+def get_ai_mode(uid):
+    return user_ai_mode.get(str(uid), AI_MODE_AUTO)
+
+
+def set_ai_mode(uid, mode):
+    user_ai_mode[str(uid)] = mode
+
 
 # ============================================================
 # PERSISTENT MEMORY — SEPARATE GITHUB REPOSITORY
@@ -599,6 +611,9 @@ async def load_persistent_memory(uid):
         raw = base64.b64decode(encoded.replace("\n", "")).decode("utf-8")
         saved = json.loads(raw)
         if isinstance(saved, dict):
+            saved_mode = saved.get("ai_mode")
+            if saved_mode in AI_MODE_LABELS:
+                user_ai_mode[uid] = saved_mode
             saved = saved.get("memory", [])
         if not isinstance(saved, list):
             saved = []
@@ -614,7 +629,7 @@ async def save_persistent_memory(uid):
     if not GITHUB_TOKEN or not GITHUB_REPO:
         log.warning("PERSISTENT MEMORY SAVE SKIPPED | GITHUB_TOKEN/GITHUB_REPO belum tersedia")
         return
-    raw = json.dumps({"user_id": uid, "memory": history(uid)[-MAX_MEMORY:], "updated_at": int(time.time())}, ensure_ascii=False, indent=2)
+    raw = json.dumps({"user_id": uid, "memory": history(uid)[-MAX_MEMORY:], "ai_mode": get_ai_mode(uid), "updated_at": int(time.time())}, ensure_ascii=False, indent=2)
     encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
     url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
@@ -2346,55 +2361,6 @@ jangan menyatakan aman tanpa perhitungan engineering.
 
 
 # ============================================================
-# NVIDIA NIM / DEEPSEEK V4 FLASH
-# ============================================================
-
-def call_nvidia(uid, text, task, reasoning_effort=None, model=None):
-
-    if not nvidia:
-        raise RuntimeError("NVIDIA_API_KEY belum tersedia.")
-
-    effort = reasoning_effort
-    if effort is None:
-        effort = {
-            "reasoning": "high",
-            "math": "high",
-            "coding": "high",
-            "technical": "high",
-            "civil": "high",
-            "creative": "none",
-            "general": "none",
-        }.get(task, "none")
-
-    # Mengikuti pola request NVIDIA yang kamu berikan.
-    # reasoning_effort berada di chat_template_kwargs.
-    r = nvidia.chat.completions.create(
-        model=(model or NVIDIA_MODEL),
-        messages=build_messages(uid, text, task),
-        temperature=1,
-        top_p=0.95,
-        max_tokens=NVIDIA_MAX_OUTPUT_TOKENS,
-        extra_body={
-            "chat_template_kwargs": {
-                "thinking": effort != "none",
-                "reasoning_effort": effort,
-            }
-        },
-        stream=False,
-    )
-
-    message = r.choices[0].message
-    answer = getattr(message, "content", None) or ""
-
-    if not answer.strip():
-        raise RuntimeError(
-            f"NVIDIA ({model or NVIDIA_MODEL}) mengembalikan jawaban kosong."
-        )
-
-    return answer, (model or NVIDIA_MODEL)
-
-
-# ============================================================
 # GROQ
 # ============================================================
 
@@ -2493,13 +2459,14 @@ def _call_with_retry(fn, retries=1, base_delay=1.5):
 # SMART CHAT ROUTER
 # ============================================================
 
-def chat_router(uid, text):
+def chat_router(uid, text, ai_mode="auto"):
 
     task = classify_task(text)
 
     log.info(
-        "TASK=%s | text=%s",
+        "TASK=%s | ai_mode=%s | text=%s",
         task,
+        ai_mode,
         text[:120],
     )
 
@@ -2517,67 +2484,8 @@ def chat_router(uid, text):
                 "Civil Calculator",
                 "Local Calculation Engine",
                 task,
-                [{
-                    "provider": "local",
-                    "model": "Local Calculation Engine",
-                    "status": "SUCCESS",
-                }],
-                0.0,
-                "LOCAL",
+                [],
             )
-
-    # --------------------------------------------------------
-    # MANUAL MODE (ADITIF)
-    # Default AUTO tidak berubah. Jika user memilih AI tertentu,
-    # AI tersebut dicoba terlebih dahulu lalu fallback ke routing lama.
-    # --------------------------------------------------------
-    selected_mode = user_ai_mode.get(str(uid), "auto")
-    manual_attempts = []
-    if selected_mode != "auto":
-        manual_map = {
-            "nvidia_fast": ("NVIDIA Fast", "nvidia", NVIDIA_MODEL, "none"),
-            "nvidia_coding": ("NVIDIA Coding", "nvidia", NVIDIA_MODEL, "high"),
-            "nvidia_technical": ("NVIDIA Technical", "nvidia", NVIDIA_MODEL, "high"),
-            "nvidia_reasoning": ("NVIDIA Reasoning", "nvidia", NVIDIA_MODEL, "max"),
-            "groq_fast": ("Groq Fast", "groq", GROQ_FAST_MODEL, None),
-            "groq_coding": ("Groq Coding", "groq", GROQ_CODING_MODEL, None),
-            "groq_reasoning": ("Groq Reasoning", "groq", GROQ_REASONING_MODEL, None),
-            "gemini": ("Gemini", "gemini", GEMINI_CHAT_MODEL, None),
-            "openrouter": ("OpenRouter FREE", "openrouter", OPENROUTER_FREE_MODEL, None),
-        }
-        cfg = manual_map.get(selected_mode)
-        if cfg:
-            label, provider, selected_model, effort = cfg
-            attempts = []
-            try:
-                started_manual = time.perf_counter()
-                if provider == "nvidia":
-                    answer, model = _call_with_retry(
-                        lambda: call_nvidia(uid, text, task, reasoning_effort=effort, model=selected_model),
-                        retries=0,
-                    )
-                elif provider == "groq":
-                    answer, model = _call_with_retry(
-                        lambda: call_groq(uid, text, task, model=selected_model),
-                        retries=1,
-                    )
-                elif provider == "gemini":
-                    answer, model = _call_with_retry(
-                        lambda: call_gemini(uid, text, task),
-                        retries=0,
-                    )
-                else:
-                    answer, model = _call_with_retry(
-                        lambda: call_openrouter(uid, text, task, model=selected_model),
-                        retries=1,
-                    )
-                attempts.append({"provider": provider, "model": model, "status": "SUCCESS"})
-                return answer, label, model, task, attempts, time.perf_counter() - started_manual, "MAIN"
-            except Exception as e:
-                attempts.append({"provider": provider, "model": selected_model, "status": "FAILED", "reason": _transparent_error_reason(e)})
-                manual_attempts = attempts
-                log.warning("MANUAL PROVIDER FAILED | mode=%s | error=%s", selected_mode, str(e)[:300])
-                # fallback masuk ke routing lama di bawah
 
     if task == "technical":
 
@@ -2870,9 +2778,27 @@ def chat_router(uid, text):
             ),
         ]
 
+    # ------------------------------------------------------------
+    # MODE MANUAL (BARU): kalau user memaksa 1 provider tertentu,
+    # saring daftar supaya HANYA provider itu yang dicoba.
+    # Model cadangan MILIK provider yang sama tetap boleh dicoba
+    # (mis. Groq (gpt-oss-20b) -> Groq Cadangan (...)), tapi TIDAK
+    # akan pindah ke provider lain, supaya jelas AI mana yang gagal.
+    # Kalkulator Sipil di atas tidak terpengaruh (bukan AI).
+    # ------------------------------------------------------------
+    if ai_mode and ai_mode != AI_MODE_AUTO:
+
+        filtered_providers = [
+            (name, fn)
+            for name, fn in providers
+            if name.lower().startswith(ai_mode)
+        ]
+
+        if filtered_providers:
+            providers = filtered_providers
+
     errors = []
-    attempts = list(manual_attempts)
-    started = time.perf_counter()
+    attempts = []
 
     for provider_name, fn in providers:
 
@@ -2904,18 +2830,15 @@ def chat_router(uid, text):
             attempts.append({
                 "provider": provider_name,
                 "model": model,
-                "status": "SUCCESS",
+                "status": "ok",
             })
 
-            status = "MAIN" if len(attempts) == 1 else "FALLBACK"
             return (
                 answer,
                 provider_name,
                 model,
                 task,
                 attempts,
-                time.perf_counter() - started,
-                status,
             )
 
         except Exception as e:
@@ -2925,11 +2848,12 @@ def chat_router(uid, text):
             errors.append(
                 f"{provider_name}: {error_text[:300]}"
             )
+
             attempts.append({
                 "provider": provider_name,
                 "model": None,
-                "status": "FAILED",
-                "reason": _transparent_error_reason(e),
+                "status": "failed",
+                "error": error_text[:200],
             })
 
             log.warning(
@@ -2942,68 +2866,6 @@ def chat_router(uid, text):
         "Semua provider AI GRATIS gagal. "
         + " | ".join(errors)
     )
-
-
-# ============================================================
-# TRANSPARENCY
-# ============================================================
-
-def _transparent_error_reason(exc):
-    t = str(exc).lower()
-    if "401" in t or "unauthorized" in t or "invalid api key" in t or "authentication" in t:
-        return "AUTH"
-    if "403" in t or "forbidden" in t:
-        return "FORBIDDEN"
-    if "429" in t or "rate limit" in t or "resource_exhausted" in t or "quota" in t:
-        return "RATE LIMIT/QUOTA"
-    if "timeout" in t or "timed out" in t:
-        return "TIMEOUT"
-    if "model_not_found" in t or "model not found" in t or "does not exist" in t:
-        return "MODEL TIDAK TERSEDIA"
-    if "422" in t or "validation" in t:
-        return "VALIDATION"
-    return "ERROR"
-
-
-def _transparent_provider_label(name):
-    labels = {
-        "nvidia": "NVIDIA DeepSeek V4 Flash",
-        "groq": "Groq",
-        "gemini": "Gemini",
-        "openrouter": "OpenRouter FREE",
-        "local": "Civil Calculator",
-    }
-    return labels.get(name, name)
-
-
-def _transparent_format(answer, provider, model, task, status, elapsed, attempts):
-    icons = {"nvidia": "🟢", "groq": "⚡", "gemini": "👁️", "openrouter": "🌐", "local": "🧮"}
-    icon = icons.get(provider, "🤖")
-    lines = []
-    for a in attempts:
-        p = a.get("provider", "unknown")
-        label = _transparent_provider_label(p)
-        icon2 = icons.get(p, "🤖")
-        m = a.get("model") or "default"
-        if a.get("status") == "SUCCESS":
-            lines.append(f"{icon2} {label} — {m} — ✅ BERHASIL")
-        else:
-            reason = a.get("reason", "ERROR")
-            lines.append(f"{icon2} {label} — {m} — ❌ GAGAL — {reason}")
-    history = "\n".join(lines) if lines else "• Tidak ada riwayat routing."
-    status_icon = "🎯" if status == "MAIN" else "🔄" if status == "FALLBACK" else "🧮"
-    header = (
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🤖 AI: {icon} {_transparent_provider_label(provider)}\n"
-        f"🧠 Model: {model}\n"
-        f"📌 Task: {str(task).upper()}\n"
-        f"{status_icon} Status: {status}\n"
-        f"⏱️ Waktu: {elapsed:.2f} detik\n"
-        "🔍 Riwayat routing:\n"
-        f"{history}\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-    )
-    return header + answer
 
 
 # ============================================================
@@ -3892,6 +3754,54 @@ def generate_image(
 # COMMAND ARGUMENT
 # ============================================================
 
+# ============================================================
+# TRANSPARANSI JAWABAN (BARU)
+# ============================================================
+# Menampilkan AI mana yang benar-benar menjawab, model apa yang
+# dipakai, AI mana saja yang sempat dicoba tapi gagal, dan mode
+# AI yang sedang aktif (otomatis / manual).
+
+def _build_transparency_footer(provider, model, ai_mode, attempts):
+
+    mode_label = AI_MODE_LABELS.get(
+        ai_mode,
+        AI_MODE_LABELS[AI_MODE_AUTO],
+    )
+
+    if provider == "Civil Calculator":
+
+        return (
+            "――――――――――――\n"
+            "🧮 Dihitung oleh: Civil Calculator\n"
+            "📌 Mesin hitung lokal (bukan AI), jadi tidak "
+            "dipengaruhi mode AI."
+        )
+
+    failed = [
+        a["provider"]
+        for a in (attempts or [])
+        if a.get("status") == "failed"
+    ]
+
+    lines = [
+        "――――――――――――",
+        f"🤖 Dijawab oleh: {provider}",
+    ]
+
+    if model and model != provider:
+        lines.append(f"🧠 Model: {model}")
+
+    if failed:
+        lines.append(
+            "⚠️ Sempat gagal sebelumnya: "
+            + ", ".join(failed)
+        )
+
+    lines.append(f"🎯 Mode AI: {mode_label}")
+
+    return "\n".join(lines)
+
+
 def command_arg(text):
 
     parts = text.split(
@@ -3910,59 +3820,6 @@ def command_arg(text):
 # ============================================================
 
 async def handle(update):
-
-    # ========================================================
-    # INLINE MODEL PICKER (ADITIF)
-    # ========================================================
-    callback = update.get("callback_query")
-    if callback:
-        callback_id = callback.get("id")
-        data = callback.get("data", "")
-        from_user = callback.get("from", {})
-        uid = str(from_user.get("id", ""))
-        chat_id = callback.get("message", {}).get("chat", {}).get("id")
-        mode_map = {
-            "ai_auto": "auto",
-            "ai_nvidia_fast": "nvidia_fast",
-            "ai_nvidia_coding": "nvidia_coding",
-            "ai_nvidia_technical": "nvidia_technical",
-            "ai_nvidia_reasoning": "nvidia_reasoning",
-            "ai_groq_fast": "groq_fast",
-            "ai_groq_coding": "groq_coding",
-            "ai_groq_reasoning": "groq_reasoning",
-            "ai_gemini": "gemini",
-            "ai_openrouter": "openrouter",
-        }
-        if data in mode_map:
-            user_ai_mode[uid] = mode_map[data]
-            if callback_id:
-                try:
-                    await tg("answerCallbackQuery", {
-                        "callback_query_id": callback_id,
-                        "text": f"Mode AI: {mode_map[data].upper()}",
-                    })
-                except Exception:
-                    pass
-            labels = {
-                "auto": "🔄 AUTO",
-                "nvidia_fast": "🟢 NVIDIA Fast",
-                "nvidia_coding": "💻 NVIDIA Coding",
-                "nvidia_technical": "🔧 NVIDIA Technical",
-                "nvidia_reasoning": "🧠 NVIDIA Reasoning",
-                "groq_fast": "⚡ Groq Fast",
-                "groq_coding": "💻 Groq Coding",
-                "groq_reasoning": "🧠 Groq Reasoning",
-                "gemini": "👁 Gemini",
-                "openrouter": "🌐 OpenRouter FREE",
-            }
-            if chat_id:
-                await send_text(
-                    chat_id,
-                    f"✅ Mode AI diubah ke: {labels[mode_map[data]]}\n\n"
-                    "AI pilihan menjadi provider utama. Jika gagal, "
-                    "routing/fallback lama tetap digunakan.",
-                )
-        return
 
     message = update.get(
         "message"
@@ -4079,6 +3936,7 @@ urugan 10 x 5 x 0.2 meter
 Perintah:
 
 /model
+/ai
 /reset
 /gambar <prompt>
 
@@ -4125,51 +3983,163 @@ hasil material bukan pengganti desain engineer.
         "/model"
     ):
 
-        current = user_ai_mode.get(str(uid), "auto")
-        keyboard = {
-            "inline_keyboard": [
-                [{"text": "🔄 AUTO", "callback_data": "ai_auto"}],
-                [{"text": "🟢 NVIDIA Fast", "callback_data": "ai_nvidia_fast"}, {"text": "💻 NVIDIA Coding", "callback_data": "ai_nvidia_coding"}],
-                [{"text": "🔧 NVIDIA Technical", "callback_data": "ai_nvidia_technical"}, {"text": "🧠 NVIDIA Reasoning", "callback_data": "ai_nvidia_reasoning"}],
-                [{"text": "⚡ Groq Fast", "callback_data": "ai_groq_fast"}, {"text": "💻 Groq Coding", "callback_data": "ai_groq_coding"}],
-                [{"text": "🧠 Groq Reasoning", "callback_data": "ai_groq_reasoning"}],
-                [{"text": "👁 Gemini", "callback_data": "ai_gemini"}, {"text": "🌐 OpenRouter FREE", "callback_data": "ai_openrouter"}],
-            ]
-        }
-        labels = {
-            "auto": "🔄 AUTO",
-            "nvidia_fast": "🟢 NVIDIA Fast",
-            "nvidia_coding": "💻 NVIDIA Coding",
-            "nvidia_technical": "🔧 NVIDIA Technical",
-            "nvidia_reasoning": "🧠 NVIDIA Reasoning",
-            "groq_fast": "⚡ Groq Fast",
-            "groq_coding": "💻 Groq Coding",
-            "groq_reasoning": "🧠 Groq Reasoning",
-            "gemini": "👁 Gemini",
-            "openrouter": "🌐 OpenRouter FREE",
-        }
-        status = (
-            f"🤖 MODE AI: {labels.get(current, current)}\n\n"
-            f"NVIDIA: {'✅ AKTIF' if nvidia else '❌ TIDAK AKTIF'}\n"
-            f"Gemini: {'✅ AKTIF' if gemini else '❌ TIDAK AKTIF'}\n"
-            f"Groq: {'✅ AKTIF' if groq else '❌ TIDAK AKTIF'}\n"
-            f"OpenRouter FREE: {'✅ AKTIF' if openrouter else '❌ TIDAK AKTIF'}\n\n"
-            f"NVIDIA: {NVIDIA_MODEL}\n"
-            f"Groq Fast: {GROQ_FAST_MODEL}\n"
-            f"Groq Coding: {GROQ_CODING_MODEL}\n"
-            f"Groq Reasoning: {GROQ_REASONING_MODEL}\n"
-            f"Gemini: {GEMINI_CHAT_MODEL}\n"
-            f"OpenRouter: {OPENROUTER_FREE_MODEL}\n\n"
-            "💰 PAID MODEL ROUTING: DISABLED"
+        await load_persistent_memory(uid)
+
+        await send_text(
+            chat_id,
+            f"""
+🤖 STATUS SUPER AI AGENT
+
+Gemini:
+{'✅ AKTIF' if gemini else '❌ TIDAK AKTIF'}
+
+OpenRouter FREE:
+{'✅ AKTIF' if openrouter else '❌ TIDAK AKTIF'}
+
+Groq FREE:
+{'✅ AKTIF' if groq else '❌ TIDAK AKTIF'}
+
+🏗️ CIVIL CALCULATOR
+
+✅ ACTIVE
+Local Calculation Engine
+
+Kemampuan:
+
+• Beton
+• Sloof
+• Kolom
+• Balok
+• Plat beton
+• Footplat
+• Pondasi
+• Batu kali
+• Dinding bata
+• Batako
+• Plester
+• Acian
+• Galian
+• Urugan
+• Besi
+• Berat besi
+• Jumlah batang besi
+
+🎨 GENERATE GAMBAR
+
+Cloudflare Flux:
+{'✅ AKTIF' if CLOUDFLARE_ENABLED else '❌ TIDAK AKTIF'}
+
+Pollinations (fallback):
+{'✅ AKTIF' if POLLINATIONS_ENABLED else '❌ TIDAK AKTIF'}
+
+🧠 MODEL
+
+Gemini:
+{GEMINI_CHAT_MODEL}
+
+OpenRouter:
+{OPENROUTER_FREE_MODEL}
+
+Groq Coding:
+{GROQ_CODING_MODEL}
+
+Groq Reasoning:
+{GROQ_REASONING_MODEL}
+
+Groq Fast:
+{GROQ_FAST_MODEL}
+
+💰 PAID MODEL ROUTING
+DISABLED
+
+🎯 MODE AI SAAT INI
+{AI_MODE_LABELS.get(get_ai_mode(uid), AI_MODE_LABELS[AI_MODE_AUTO])}
+
+Ketik /ai untuk mengatur pilihan AI.
+""",
         )
-        await tg(
-            "sendMessage",
-            {
-                "chat_id": chat_id,
-                "text": clean_telegram_text(status),
-                "reply_markup": keyboard,
-            },
+
+        return
+
+    # ========================================================
+    # AI (BARU) — pilih manual AI mana yang dipakai + transparansi
+    # ========================================================
+
+    if text.startswith(
+        "/ai"
+    ):
+
+        await load_persistent_memory(uid)
+
+        arg = command_arg(text).strip().lower()
+
+        if not arg:
+
+            current_mode = get_ai_mode(uid)
+            current_label = AI_MODE_LABELS.get(
+                current_mode,
+                AI_MODE_LABELS[AI_MODE_AUTO],
+            )
+
+            await send_text(
+                chat_id,
+                f"""
+🤖 PEMILIHAN AI MANUAL
+
+Mode saat ini:
+{current_label}
+
+Pilihan:
+
+/ai auto
+→ otomatis, coba semua AI + fallback (default)
+
+/ai groq
+→ paksa pakai Groq saja
+{'✅ API key aktif' if groq else '❌ GROQ_API_KEY belum di-set'}
+
+/ai openrouter
+→ paksa pakai OpenRouter saja
+{'✅ API key aktif' if openrouter else '❌ OPENROUTER_API_KEY belum di-set'}
+
+/ai gemini
+→ paksa pakai Gemini saja
+{'✅ API key aktif' if gemini else '❌ GEMINI_API_KEY belum di-set'}
+
+📌 CATATAN
+• Civil Calculator (rumus beton, besi, dll) selalu pakai mesin hitung lokal, bukan AI, jadi tidak dipengaruhi mode ini.
+• Mode manual TIDAK otomatis pindah ke AI lain kalau AI pilihanmu gagal, supaya kamu tahu persis AI mana yang gagal.
+• Setiap jawaban chat akan menampilkan info AI mana yang menjawab (dan AI mana saja yang sempat gagal).
+""",
+            )
+
+            return
+
+        mode = AI_MODE_CHOICES.get(arg)
+
+        if not mode:
+
+            await send_text(
+                chat_id,
+                "❌ Pilihan tidak dikenali.\n\n"
+                "Gunakan salah satu:\n"
+                "/ai auto\n"
+                "/ai groq\n"
+                "/ai openrouter\n"
+                "/ai gemini",
+            )
+
+            return
+
+        set_ai_mode(uid, mode)
+
+        await save_persistent_memory(uid)
+
+        await send_text(
+            chat_id,
+            f"✅ Mode AI diubah ke:\n{AI_MODE_LABELS[mode]}",
         )
+
         return
 
     # ========================================================
@@ -4479,18 +4449,19 @@ Jangan mengarang ukuran yang tidak terlihat.
             },
         )
 
+        ai_mode = get_ai_mode(uid)
+
         (
             answer,
             provider,
             model,
             task,
             attempts,
-            elapsed,
-            status,
         ) = await asyncio.to_thread(
             chat_router,
             uid,
             text,
+            ai_mode,
         )
 
         remember(
@@ -4507,31 +4478,27 @@ Jangan mengarang ukuran yang tidak terlihat.
 
         await save_persistent_memory(uid)
 
-        transparent_answer = _transparent_format(
+        await send_text(
+            chat_id,
             answer,
-            "local" if provider == "Civil Calculator" else (
-                "nvidia" if provider.startswith("NVIDIA") else
-                "groq" if provider.startswith("Groq") else
-                "gemini" if provider.startswith("Gemini") else
-                "openrouter"
-            ),
-            model,
-            task,
-            "LOCAL" if provider == "Civil Calculator" else status,
-            elapsed,
-            attempts,
         )
 
         await send_text(
             chat_id,
-            transparent_answer,
+            _build_transparency_footer(
+                provider,
+                model,
+                ai_mode,
+                attempts,
+            ),
         )
 
         log.info(
-            "CHAT DONE | task=%s | provider=%s | model=%s",
+            "CHAT DONE | task=%s | provider=%s | model=%s | mode=%s",
             task,
             provider,
             model,
+            ai_mode,
         )
 
     except Exception as e:
