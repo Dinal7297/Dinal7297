@@ -57,6 +57,10 @@ OPENROUTER_FREE_MODEL = os.getenv(
     "OPENROUTER_FREE_MODEL",
     "openrouter/free",
 )
+OPENROUTER_GROK_FREE_MODEL = os.getenv(
+    "OPENROUTER_GROK_FREE_MODEL",
+    "x-ai/grok-4-fast:free",
+)
 
 GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_FAST_MODEL = os.getenv(
@@ -2363,9 +2367,16 @@ def call_nvidia(uid, text, task, reasoning_effort=None, model=None):
             "general": "none",
         }.get(task, "none")
 
-    # Gunakan format NVIDIA yang sama dengan contoh API key/user yang sudah
-    # terbukti dipakai: reasoning_effort dikirim melalui chat_template_kwargs.
-    # Ini sengaja tidak mengubah provider lain.
+    # NVIDIA API reference saat ini menerima reasoning_effort sebagai
+    # parameter top-level. Ini menghindari request yang menggantung karena
+    # payload reasoning lama.
+    if effort == "none":
+        output_tokens = min(NVIDIA_MAX_OUTPUT_TOKENS, 2048)
+    elif effort == "high":
+        output_tokens = min(NVIDIA_MAX_OUTPUT_TOKENS, 4096)
+    else:
+        output_tokens = min(NVIDIA_MAX_OUTPUT_TOKENS, 6144)
+
     r = nvidia.chat.completions.create(
         model=(model or NVIDIA_MODEL),
         messages=build_messages(
@@ -2377,13 +2388,8 @@ def call_nvidia(uid, text, task, reasoning_effort=None, model=None):
         ),
         temperature=1,
         top_p=0.95,
-        max_tokens=NVIDIA_MAX_OUTPUT_TOKENS,
-        extra_body={
-            "chat_template_kwargs": {
-                "thinking": effort != "none",
-                "reasoning_effort": effort,
-            }
-        },
+        max_tokens=output_tokens,
+        reasoning_effort=effort,
         stream=False,
     )
 
@@ -2501,6 +2507,7 @@ def _provider_available(name):
     return {
         "nvidia": bool(nvidia),
         "groq": bool(groq),
+        "grok": bool(openrouter),
         "gemini": bool(gemini),
         "openrouter": bool(openrouter),
     }.get(name, False)
@@ -2513,6 +2520,8 @@ def _provider_call(name, uid, text, task, model=None, reasoning_effort=None):
         return call_groq(uid, text, task, model=model)
     if name == "gemini":
         return call_gemini(uid, text, task)
+    if name == "grok":
+        return call_openrouter(uid, text, task, model=model or OPENROUTER_GROK_FREE_MODEL)
     if name == "openrouter":
         return call_openrouter(uid, text, task, model=model or OPENROUTER_FREE_MODEL)
     raise RuntimeError(f"Provider tidak dikenal: {name}")
@@ -2523,6 +2532,7 @@ def _provider_label(name):
     return {
         "nvidia": "NVIDIA DeepSeek V4 Flash",
         "groq": "Groq",
+        "grok": "Grok FREE (OpenRouter)",
         "gemini": "Gemini",
         "openrouter": "OpenRouter Free",
     }.get(name, name)
@@ -2530,8 +2540,9 @@ def _provider_label(name):
 
 def _auto_provider_order(task):
     if task in ("reasoning", "math", "coding", "technical", "civil"):
-        return ["nvidia", "groq", "openrouter", "gemini"]
-    return ["nvidia", "groq", "openrouter", "gemini"]
+        return ["nvidia", "groq", "grok", "openrouter", "gemini"]
+    # Chat ringan/general -> Grok FREE menjadi pilihan pertama.
+    return ["grok", "nvidia", "groq", "openrouter", "gemini"]
 
 
 MANUAL_AI_MODES = {
@@ -2542,6 +2553,7 @@ MANUAL_AI_MODES = {
     "groq_fast": ("groq", GROQ_FAST_MODEL, None, "⚡ Groq Fast"),
     "groq_coding": ("groq", GROQ_CODING_MODEL, None, "💻 Groq Coding"),
     "groq_reasoning": ("groq", GROQ_REASONING_MODEL, None, "🧠 Groq Reasoning"),
+    "grok_free": ("grok", OPENROUTER_GROK_FREE_MODEL, None, "🟣 Grok FREE"),
     "gemini": ("gemini", GEMINI_CHAT_MODEL, None, "👁 Gemini"),
     "openrouter": ("openrouter", OPENROUTER_FREE_MODEL, None, "🌐 OpenRouter FREE"),
 }
@@ -2555,7 +2567,7 @@ def _transparent_error_reason(exc):
         return "FORBIDDEN"
     if "429" in t or "rate limit" in t or "resource_exhausted" in t or "quota" in t:
         return "RATE LIMIT/QUOTA"
-    if "timeout" in t or "timed out" in t:
+    if "timeout" in t or "timed out" in t or "readtimeout" in t:
         return "TIMEOUT"
     if "model_not_found" in t or "model not found" in t or "does not exist" in t:
         return "MODEL TIDAK TERSEDIA"
@@ -2565,7 +2577,7 @@ def _transparent_error_reason(exc):
 
 
 def _transparent_route_line(provider_name, model, status, reason=None):
-    icons = {"nvidia": "🟢", "groq": "⚡", "gemini": "👁️", "openrouter": "🌐"}
+    icons = {"nvidia": "🟢", "groq": "⚡", "grok": "🟣", "gemini": "👁️", "openrouter": "🌐"}
     icon = icons.get(provider_name, "🤖")
     label = _provider_label(provider_name)
     suffix = f" — {reason}" if reason else ""
@@ -2601,7 +2613,7 @@ def chat_router(uid, text):
             routes = [(p, None, None) for p in _auto_provider_order(task)]
         else:
             provider, model, effort, _label = cfg
-            fallback = ["nvidia", "groq", "openrouter", "gemini"]
+            fallback = ["grok", "nvidia", "groq", "openrouter", "gemini"]
             routes = [(provider, model, effort)] + [(p, None, None) for p in fallback if p != provider]
 
     attempts = []
@@ -3558,6 +3570,7 @@ async def handle(update):
             "ai_groq_fast": "groq_fast",
             "ai_groq_coding": "groq_coding",
             "ai_groq_reasoning": "groq_reasoning",
+            "ai_grok_free": "grok_free",
             "ai_gemini": "gemini",
             "ai_openrouter": "openrouter",
         }
@@ -3750,6 +3763,7 @@ hasil material bukan pengganti desain engineer.
                 [{"text": "🔧 NVIDIA Technical", "callback_data": "ai_nvidia_technical"}, {"text": "🧠 NVIDIA Reasoning", "callback_data": "ai_nvidia_reasoning"}],
                 [{"text": "⚡ Groq Fast", "callback_data": "ai_groq_fast"}, {"text": "💻 Groq Coding", "callback_data": "ai_groq_coding"}],
                 [{"text": "🧠 Groq Reasoning", "callback_data": "ai_groq_reasoning"}],
+                [{"text": "🟣 Grok FREE", "callback_data": "ai_grok_free"}],
                 [{"text": "👁 Gemini", "callback_data": "ai_gemini"}, {"text": "🌐 OpenRouter FREE", "callback_data": "ai_openrouter"}],
             ]
         }
@@ -3759,6 +3773,7 @@ hasil material bukan pengganti desain engineer.
             f"🤖 MODE AI: {current_label}\n\n"
             f"NVIDIA: {'✅ AKTIF' if nvidia else '❌ TIDAK AKTIF'}\n"
             f"Groq: {'✅ AKTIF' if groq else '❌ TIDAK AKTIF'}\n"
+            f"Grok FREE: {'✅ AKTIF' if openrouter else '❌ TIDAK AKTIF'}\n"
             f"Gemini: {'✅ AKTIF' if gemini else '❌ TIDAK AKTIF'}\n"
             f"OpenRouter FREE: {'✅ AKTIF' if openrouter else '❌ TIDAK AKTIF'}\n\n"
             "Pilih AI/model utama. Fallback GRATIS tetap aktif.\n\n"
@@ -3767,6 +3782,7 @@ hasil material bukan pengganti desain engineer.
             f"Groq Coding: {GROQ_CODING_MODEL}\n"
             f"Groq Reasoning: {GROQ_REASONING_MODEL}\n"
             f"Groq Fast: {GROQ_FAST_MODEL}\n"
+            f"Grok FREE: {OPENROUTER_GROK_FREE_MODEL}\n"
             f"OpenRouter: {OPENROUTER_FREE_MODEL}\n\n"
             "💰 PAID MODEL ROUTING: DISABLED"
         )
@@ -4163,6 +4179,8 @@ async def root():
                 bool(gemini),
 
             "openrouter_free":
+                bool(openrouter),
+            "grok_free":
                 bool(openrouter),
 
             "groq_free_tier":
