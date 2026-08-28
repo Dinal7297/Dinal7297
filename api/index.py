@@ -2541,14 +2541,51 @@ MANUAL_AI_MODES = {
     "openrouter": ("openrouter", OPENROUTER_FREE_MODEL, None, "🌐 OpenRouter FREE"),
 }
 
+def _transparent_error_reason(exc):
+    """Ringkas error provider tanpa membocorkan API key atau payload."""
+    t = str(exc).lower()
+    if "401" in t or "unauthorized" in t or "invalid api key" in t or "authentication" in t:
+        return "AUTH"
+    if "403" in t or "forbidden" in t:
+        return "FORBIDDEN"
+    if "429" in t or "rate limit" in t or "resource_exhausted" in t or "quota" in t:
+        return "RATE LIMIT/QUOTA"
+    if "timeout" in t or "timed out" in t:
+        return "TIMEOUT"
+    if "model_not_found" in t or "model not found" in t or "does not exist" in t:
+        return "MODEL TIDAK TERSEDIA"
+    if "422" in t or "validation" in t:
+        return "VALIDATION"
+    return "ERROR"
+
+
+def _transparent_route_line(provider_name, model, status, reason=None):
+    icons = {"nvidia": "🟢", "groq": "⚡", "gemini": "👁️", "openrouter": "🌐"}
+    icon = icons.get(provider_name, "🤖")
+    label = _provider_label(provider_name)
+    suffix = f" — {reason}" if reason else ""
+    return f"{icon} {label} | {model or 'default'} | {status}{suffix}"
+
+
 def chat_router(uid, text):
+    started = time.perf_counter()
     task = classify_task(text)
     mode = user_ai_mode.get(str(uid), "auto")
 
     if task == "civil":
         civil_result = civil_calculator(text)
         if civil_result:
-            return (civil_result, "Civil Calculator", "Local Calculation Engine", task)
+            elapsed = time.perf_counter() - started
+            meta = {
+                "provider": "local",
+                "provider_label": "Civil Calculator",
+                "model": "Local Calculation Engine",
+                "task": task,
+                "status": "LOCAL",
+                "elapsed": elapsed,
+                "routes": ["🧮 Civil Calculator | Local Calculation Engine | LOCAL"],
+            }
+            return civil_result, meta
 
     if mode == "auto":
         routes = [(p, None, None) for p in _auto_provider_order(task)]
@@ -2562,23 +2599,103 @@ def chat_router(uid, text):
             fallback = ["nvidia", "groq", "openrouter", "gemini"]
             routes = [(provider, model, effort)] + [(p, None, None) for p in fallback if p != provider]
 
-    errors = []
+    attempts = []
     for provider_name, selected_model, effort in routes:
         if not _provider_available(provider_name):
+            attempts.append({
+                "provider": provider_name,
+                "model": selected_model,
+                "status": "SKIP",
+                "reason": "API TIDAK AKTIF",
+            })
             continue
         try:
             answer, model = _call_with_retry(
-                lambda p=provider_name, m=selected_model, e=effort: _provider_call(p, uid, text, task, model=m, reasoning_effort=e),
+                lambda p=provider_name, m=selected_model, e=effort: _provider_call(
+                    p, uid, text, task, model=m, reasoning_effort=e
+                ),
                 retries=1,
             )
             if not answer.strip():
                 raise RuntimeError("Provider mengembalikan jawaban kosong.")
-            return (answer, _provider_label(provider_name), model, task)
+            status = "MAIN" if not attempts else "FALLBACK"
+            attempts.append({
+                "provider": provider_name,
+                "model": model,
+                "status": "SUCCESS",
+            })
+            elapsed = time.perf_counter() - started
+            meta = {
+                "provider": provider_name,
+                "provider_label": _provider_label(provider_name),
+                "model": model,
+                "task": task,
+                "status": status,
+                "elapsed": elapsed,
+                "routes": attempts,
+            }
+            return answer, meta
         except Exception as e:
-            errors.append(f"{_provider_label(provider_name)}: {str(e)[:300]}")
+            attempts.append({
+                "provider": provider_name,
+                "model": selected_model,
+                "status": "FAILED",
+                "reason": _transparent_error_reason(e),
+            })
 
-    detail = "\n".join(f"• {e}" for e in errors)
+    elapsed = time.perf_counter() - started
+    detail = "\n".join(
+        f"• {_provider_label(a['provider'])}: {a.get('reason', a.get('status', 'UNKNOWN'))}"
+        for a in attempts
+    )
     raise RuntimeError("Semua provider AI GRATIS gagal.\n" + detail)
+
+
+def format_transparent_response(answer, meta):
+    """Header wajib yang menjelaskan AI/model/task/status/waktu/riwayat."""
+    if meta.get("provider") == "local":
+        history = "\n".join(f"• {x}" for x in meta.get("routes", []))
+    else:
+        history_lines = []
+        for a in meta.get("routes", []):
+            if a.get("status") == "FAILED":
+                history_lines.append(
+                    _transparent_route_line(
+                        a["provider"], a.get("model"), "❌ GAGAL", a.get("reason")
+                    )
+                )
+            elif a.get("status") == "SKIP":
+                history_lines.append(
+                    _transparent_route_line(
+                        a["provider"], a.get("model"), "⏭️ DILEWATI", a.get("reason")
+                    )
+                )
+            elif a.get("status") == "SUCCESS":
+                history_lines.append(
+                    _transparent_route_line(
+                        a["provider"], a.get("model"), "✅ BERHASIL"
+                    )
+                )
+        history = "\n".join(history_lines) if history_lines else "• Tidak ada percobaan provider."
+
+    status_icon = "🎯" if meta.get("status") == "MAIN" else ("🔄" if meta.get("status") == "FALLBACK" else "🧮")
+    provider_display = meta.get("provider_label", "Unknown")
+    model_display = meta.get("model", "Unknown")
+    task_display = str(meta.get("task", "general")).upper()
+    elapsed = meta.get("elapsed", 0.0)
+
+    header = (
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"🤖 AI: {provider_display}\n"
+        f"🧠 Model: {model_display}\n"
+        f"📌 Task: {task_display}\n"
+        f"{status_icon} Status: {meta.get('status', 'UNKNOWN')}\n"
+        f"⏱️ Waktu: {elapsed:.2f} detik\n"
+        "🔍 Riwayat routing:\n"
+        f"{history}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+    return header + answer
 
 # ============================================================
 # TELEGRAM API
@@ -3024,114 +3141,70 @@ def analyze_image(
     prompt
 ):
 
-    if not gemini:
-        raise RuntimeError(
-            "Gemini belum dikonfigurasi."
-        )
+    started = time.perf_counter()
+    if not gemini and not openrouter:
+        raise RuntimeError("Tidak ada provider vision GRATIS yang aktif.")
 
-    errors = []
+    attempts = []
 
-    try:
-
-        r = gemini.models.generate_content(
-            model=GEMINI_CHAT_MODEL,
-            contents=[
-                types.Part.from_bytes(
-                    data=data,
-                    mime_type=mime,
-                ),
-                SYSTEM
-                + "\n\n"
-                + prompt,
-            ],
-        )
-
-        if r.text:
-
-            return (
-                r.text,
-                GEMINI_CHAT_MODEL,
+    if gemini:
+        try:
+            r = gemini.models.generate_content(
+                model=GEMINI_CHAT_MODEL,
+                contents=[
+                    types.Part.from_bytes(data=data, mime_type=mime),
+                    SYSTEM + "\n\n" + prompt,
+                ],
             )
-
-    except Exception as e:
-
-        errors.append(
-            "Gemini Vision: "
-            + str(e)[:220]
-        )
+            if r.text:
+                attempts.append({"provider": "gemini", "model": GEMINI_CHAT_MODEL, "status": "SUCCESS"})
+                return r.text, GEMINI_CHAT_MODEL, {
+                    "provider": "gemini",
+                    "provider_label": "Gemini",
+                    "model": GEMINI_CHAT_MODEL,
+                    "task": "vision",
+                    "status": "MAIN" if not attempts[:-1] else "FALLBACK",
+                    "elapsed": time.perf_counter() - started,
+                    "routes": attempts,
+                }
+            raise RuntimeError("jawaban kosong")
+        except Exception as e:
+            attempts.append({"provider": "gemini", "model": GEMINI_CHAT_MODEL, "status": "FAILED", "reason": _transparent_error_reason(e)})
 
     if openrouter:
-
         try:
-
-            b64 = base64.b64encode(
-                data
-            ).decode()
-
+            b64 = base64.b64encode(data).decode()
             content = [
-
-                {
-                    "type": "text",
-                    "text":
-                        SYSTEM
-                        + "\n\n"
-                        + prompt,
-                },
-
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url":
-                            f"data:{mime};base64,{b64}"
-                    },
-                },
+                {"type": "text", "text": SYSTEM + "\n\n" + prompt},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
             ]
-
-            r = (
-                openrouter
-                .chat
-                .completions
-                .create(
-                    model=OPENROUTER_FREE_MODEL,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": content,
-                        }
-                    ],
-                    max_tokens=4096,
-                )
+            r = openrouter.chat.completions.create(
+                model=OPENROUTER_FREE_MODEL,
+                messages=[{"role": "user", "content": content}],
+                max_tokens=4096,
             )
-
-            answer = (
-                r.choices[0]
-                .message
-                .content
-                or ""
-            )
-
+            answer = r.choices[0].message.content or ""
             if answer.strip():
-
-                return (
-                    answer,
-                    getattr(
-                        r,
-                        "model",
-                        OPENROUTER_FREE_MODEL,
-                    ),
-                )
-
+                selected = getattr(r, "model", None) or OPENROUTER_FREE_MODEL
+                attempts.append({"provider": "openrouter", "model": selected, "status": "SUCCESS"})
+                return answer, selected, {
+                    "provider": "openrouter",
+                    "provider_label": "OpenRouter Free",
+                    "model": selected,
+                    "task": "vision",
+                    "status": "FALLBACK" if attempts[:-1] else "MAIN",
+                    "elapsed": time.perf_counter() - started,
+                    "routes": attempts,
+                }
+            raise RuntimeError("jawaban kosong")
         except Exception as e:
+            attempts.append({"provider": "openrouter", "model": OPENROUTER_FREE_MODEL, "status": "FAILED", "reason": _transparent_error_reason(e)})
 
-            errors.append(
-                "OpenRouter Vision: "
-                + str(e)[:220]
-            )
-
-    raise RuntimeError(
-        "Semua provider vision gagal: "
-        + " | ".join(errors)
+    detail = "\n".join(
+        f"• {_provider_label(a['provider'])}: {a.get('reason', a.get('status', 'UNKNOWN'))}"
+        for a in attempts
     )
+    raise RuntimeError("Semua provider vision GRATIS gagal.\n" + detail)
 
 
 # ============================================================
@@ -3144,69 +3217,44 @@ def analyze_video(
     prompt
 ):
 
+    started = time.perf_counter()
     if not gemini:
-        raise RuntimeError(
-            "Gemini diperlukan untuk video."
-        )
+        raise RuntimeError("Gemini diperlukan untuk video.")
 
     uploaded = gemini.files.upload(
-        file=types.Part.from_bytes(
-            data=data,
-            mime_type=mime,
-        )
+        file=types.Part.from_bytes(data=data, mime_type=mime)
     )
 
     for _ in range(60):
-
-        f = gemini.files.get(
-            name=uploaded.name
-        )
-
-        state = getattr(
-            getattr(
-                f,
-                "state",
-                None
-            ),
-            "name",
-            "",
-        )
-
+        f = gemini.files.get(name=uploaded.name)
+        state = getattr(getattr(f, "state", None), "name", "")
         if state == "ACTIVE":
-
             uploaded = f
-
             break
-
         if state == "FAILED":
-
-            raise RuntimeError(
-                "Gemini gagal memproses video."
-            )
-
+            raise RuntimeError("Gemini gagal memproses video.")
         time.sleep(2)
-
     else:
+        raise RuntimeError("Video belum siap diproses.")
 
-        raise RuntimeError(
-            "Video belum siap diproses."
-        )
-
-    result = (
-        gemini
-        .models
-        .generate_content(
-            model=GEMINI_CHAT_MODEL,
-            contents=[
-                uploaded,
-                SYSTEM
-                + "\n\n"
-                + prompt,
-            ],
-        )
+    result = gemini.models.generate_content(
+        model=GEMINI_CHAT_MODEL,
+        contents=[uploaded, SYSTEM + "\n\n" + prompt],
     )
+    answer = result.text or ""
+    if not answer.strip():
+        raise RuntimeError("Gemini mengembalikan jawaban video kosong.")
 
-    return result.text or ""
+    meta = {
+        "provider": "gemini",
+        "provider_label": "Gemini",
+        "model": GEMINI_CHAT_MODEL,
+        "task": "video",
+        "status": "MAIN",
+        "elapsed": time.perf_counter() - started,
+        "routes": [{"provider": "gemini", "model": GEMINI_CHAT_MODEL, "status": "SUCCESS"}],
+    }
+    return answer, meta
 
 
 # ============================================================
@@ -3845,13 +3893,12 @@ Contoh:
                 else "video/mp4"
             )
 
-            answer = (
-                await asyncio.to_thread(
-                    analyze_video,
-                    data,
-                    mime,
-                    caption or
-                    """
+            answer, video_meta = await asyncio.to_thread(
+                analyze_video,
+                data,
+                mime,
+                caption or
+                """
 Analisa video ini secara detail.
 
 Jika terkait pekerjaan manufaktur,
@@ -3866,12 +3913,11 @@ kanopi, atau fabrikasi:
 
 Jangan mengarang ukuran yang tidak terlihat.
 """,
-                )
             )
 
             await send_text(
                 chat_id,
-                answer,
+                format_transparent_response(answer, video_meta),
             )
 
         except Exception as e:
@@ -3984,18 +4030,16 @@ sipil, atau produk custom:
 Jangan mengarang ukuran yang tidak terlihat.
 """
 
-            answer, model = (
-                await asyncio.to_thread(
-                    analyze_image,
-                    data,
-                    mime,
-                    prompt,
-                )
+            answer, model, vision_meta = await asyncio.to_thread(
+                analyze_image,
+                data,
+                mime,
+                prompt,
             )
 
             await send_text(
                 chat_id,
-                answer,
+                format_transparent_response(answer, vision_meta),
             )
 
             log.info(
@@ -4036,12 +4080,7 @@ Jangan mengarang ukuran yang tidak terlihat.
             },
         )
 
-        (
-            answer,
-            provider,
-            model,
-            task,
-        ) = await asyncio.to_thread(
+        answer, meta = await asyncio.to_thread(
             chat_router,
             uid,
             text,
@@ -4053,6 +4092,7 @@ Jangan mengarang ukuran yang tidak terlihat.
             text,
         )
 
+        # Simpan jawaban mentah agar header transparansi tidak ikut masuk memory.
         remember(
             uid,
             "assistant",
@@ -4061,16 +4101,21 @@ Jangan mengarang ukuran yang tidak terlihat.
 
         await save_persistent_memory(uid)
 
+        transparent_answer = format_transparent_response(answer, meta)
+
         await send_text(
             chat_id,
-            answer,
+            transparent_answer,
         )
 
         log.info(
-            "CHAT DONE | task=%s | provider=%s | model=%s",
-            task,
-            provider,
-            model,
+            "CHAT DONE | task=%s | provider=%s | model=%s | status=%s | elapsed=%.2fs | routes=%s",
+            meta.get("task"),
+            meta.get("provider_label"),
+            meta.get("model"),
+            meta.get("status"),
+            meta.get("elapsed", 0.0),
+            meta.get("routes"),
         )
 
     except Exception as e:
