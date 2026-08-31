@@ -3958,23 +3958,50 @@ async def handle_callback_query(callback_query):
         mode = data.split(":", 1)[1]
         if mode not in CONVERSATION_MODE_LABELS:
             return
-        async with _user_locks[uid]:
-            # Hanya Agent yang membaca/menyimpan memory. FAST tidak menyentuh memory.
-            if mode == CONVERSATION_MODE_AGENT:
-                await load_persistent_memory(uid)
-            set_conversation_mode(uid, mode)
-            await save_persistent_memory(uid)
+
+        # Jawab callback SECEPAT MUNGKIN agar tombol Telegram tidak terlihat
+        # seperti macet. Jangan menunggu GitHub sebelum memberi konfirmasi.
         if cq_id:
             try:
-                await tg("answerCallbackQuery", {"callback_query_id": cq_id, "text": f"Mode: {CONVERSATION_MODE_LABELS[mode]}"})
+                await tg(
+                    "answerCallbackQuery",
+                    {
+                        "callback_query_id": cq_id,
+                        "text": f"Mode: {CONVERSATION_MODE_LABELS[mode]}",
+                        "show_alert": False,
+                    },
+                )
             except Exception:
                 pass
+
         if chat_id:
             if mode == CONVERSATION_MODE_AGENT:
-                msg = "🧠 AI AGENT AKTIF\n\nMemory GitHub dan konteks pekerjaan akan digunakan dan disimpan otomatis."
+                msg = (
+                    "🧠 AI AGENT AKTIF\n\n"
+                    "Memory GitHub dan konteks pekerjaan akan digunakan "
+                    "dan disimpan otomatis."
+                )
             else:
-                msg = "⚡ AI BIASA / FAST AKTIF\n\nMode ini tidak membaca atau menyimpan memory Agent."
-            await send_text(chat_id, msg, reply_markup=build_conversation_mode_keyboard())
+                msg = (
+                    "⚡ AI BIASA / FAST AKTIF\n\n"
+                    "Mode ini tidak membaca atau menyimpan memory Agent."
+                )
+            await send_text(
+                chat_id,
+                msg,
+                reply_markup=build_conversation_mode_keyboard(),
+            )
+
+        # Simpan state setelah user mendapat konfirmasi.
+        # FAST sengaja TIDAK menyentuh memory/history GitHub.
+        async with _user_locks[uid]:
+            if mode == CONVERSATION_MODE_AGENT:
+                await load_persistent_memory(uid)
+                set_conversation_mode(uid, mode)
+                await save_persistent_memory(uid)
+            else:
+                set_conversation_mode(uid, mode)
+
         return
 
     if data.startswith("aimode:"):
