@@ -485,6 +485,9 @@ MAX_MEMORY = 20
 
 # Mode AI per pengguna: auto / nvidia / groq / gemini / openrouter
 user_ai_mode = {}
+# Conversation mode is independent from AI model selection.
+# FAST = stateless; AGENT = persistent GitHub memory.
+user_conversation_mode = {}
 
 # ============================================================
 # PERSISTENT MEMORY — SEPARATE GITHUB REPOSITORY
@@ -534,6 +537,16 @@ EXPERT_ROUTING_ENABLED=True
 EXPERT_POLICY={"CHAT":["NVIDIA","GROQ","OPENROUTER_FREE","GEMINI"],"CODING":["NVIDIA_CODING","NVIDIA","GROQ","OPENROUTER_FREE","GEMINI"],"REASONING":["NVIDIA_REASONING","NVIDIA","GEMINI","GROQ","OPENROUTER_FREE"],"TECHNICAL":["NVIDIA","GEMINI","GROQ","OPENROUTER_FREE"],"CIVIL":["LOCAL_CIVIL","NVIDIA","GEMINI","GROQ","OPENROUTER_FREE"],"IMAGE":["GEMINI"],"VIDEO":["GEMINI"]}
 def v7_memory_allowed(mode): return str(mode).upper()=="AGENT"
 def v7_provider_allowed(provider): return (not FREE_ONLY_MODE) or str(provider).upper() in {"NVIDIA","NVIDIA_CODING","NVIDIA_REASONING","GROQ","OPENROUTER_FREE","GEMINI","LOCAL_CIVIL","LOCAL_CUTTING","POLLINATIONS"}
+
+def get_conversation_mode(uid):
+    return user_conversation_mode.get(str(uid), "FAST")
+
+def set_conversation_mode(uid, mode):
+    mode = str(mode).upper()
+    if mode not in {"FAST", "AGENT"}:
+        mode = "FAST"
+    user_conversation_mode[str(uid)] = mode
+    return mode
 
 
 def history(uid):
@@ -2544,9 +2557,19 @@ def _provider_label(name):
 
 
 def _auto_provider_order(task):
-    if task in ("reasoning", "math", "coding", "technical", "civil"):
-        return ["nvidia", "groq", "openrouter", "gemini"]
-    return ["nvidia", "groq", "openrouter", "gemini"]
+    # Expert routing: choose by capability, not by a blind global rotation.
+    task = str(task).lower()
+    if task in ("image", "vision"):
+        return ["gemini"]
+    if task == "video":
+        return ["gemini"]
+    if task in ("coding",):
+        return ["nvidia", "groq", "gemini", "openrouter"]
+    if task in ("reasoning", "math"):
+        return ["nvidia", "gemini", "groq", "openrouter"]
+    if task in ("technical", "civil"):
+        return ["nvidia", "gemini", "groq", "openrouter"]
+    return ["nvidia", "gemini", "groq", "openrouter"]
 
 
 MANUAL_AI_MODES = {
@@ -2621,6 +2644,9 @@ def chat_router(uid, text):
 
     attempts = []
     for provider_name, selected_model, effort in routes:
+        if not v7_provider_allowed(provider_name):
+            attempts.append({"provider": provider_name, "model": selected_model, "status": "SKIP", "reason": "PAID MODEL DIBLOKIR — FREE ONLY"})
+            continue
         if not _provider_available(provider_name):
             attempts.append({
                 "provider": provider_name,
@@ -3576,6 +3602,24 @@ async def handle(update):
             "ai_gemini": "gemini",
             "ai_openrouter": "openrouter",
         }
+        if data == "conversation_fast" or data == "conversation_agent":
+            selected = "AGENT" if data == "conversation_agent" else "FAST"
+            set_conversation_mode(uid, selected)
+            if callback_id:
+                try:
+                    await tg("answerCallbackQuery", {"callback_query_id": callback_id, "text": f"Mode percakapan: {selected}"})
+                except Exception:
+                    pass
+            if chat_id:
+                if selected == "AGENT":
+                    await load_persistent_memory(uid)
+                    msg = "🧠 AGENT aktif. Memory GitHub dimuat dan akan digunakan serta disimpan kembali."
+                else:
+                    memory[uid] = []
+                    msg = "⚡ FAST aktif. Memory GitHub tidak dibaca dan tidak akan disimpan dari percakapan FAST."
+                await send_text(chat_id, msg)
+            return
+
         if data in mode_map:
             user_ai_mode[uid] = mode_map[data]
             if callback_id:
@@ -3710,7 +3754,8 @@ urugan 10 x 5 x 0.2 meter
 
 Perintah:
 
-/model
+/mode — pilih ⚡ FAST atau 🧠 AGENT
+/model — pilih AI/model atau AUTO Expert Router
 /reset
 /gambar <prompt>
 
@@ -3727,6 +3772,30 @@ hasil material bukan pengganti desain engineer.
         return
 
     # ========================================================
+    # CONVERSATION MODE — SEPARATE FROM /model
+    # ========================================================
+    if text.startswith("/mode"):
+        mode = get_conversation_mode(uid)
+        keyboard = {
+            "inline_keyboard": [
+                [{"text": "⚡ FAST — tanpa memory", "callback_data": "conversation_fast"}],
+                [{"text": "🧠 AGENT — memory GitHub", "callback_data": "conversation_agent"}],
+            ]
+        }
+        await tg("sendMessage", {
+            "chat_id": chat_id,
+            "text": (
+                "🎛️ MODE PERCAKAPAN\n\n"
+                f"Mode aktif: {'🧠 AGENT' if mode == 'AGENT' else '⚡ FAST'}\n\n"
+                "⚡ FAST = cepat, TIDAK membaca dan TIDAK menyimpan memory GitHub.\n"
+                "🧠 AGENT = membaca memory GitHub sebelum menjawab dan menyimpan memory setelah menjawab.\n\n"
+                "Pilih mode di bawah. /model digunakan untuk memilih AI/model."
+            ),
+            "reply_markup": keyboard,
+        })
+        return
+
+    # ========================================================
     # RESET
     # ========================================================
 
@@ -3740,11 +3809,15 @@ hasil material bukan pengganti desain engineer.
         )
 
         memory[uid] = []
-        await save_persistent_memory(uid)
+        if get_conversation_mode(uid) == "AGENT":
+            await save_persistent_memory(uid)
+            reset_msg = "✅ Memory AGENT dihapus dari sesi dan GitHub."
+        else:
+            reset_msg = "✅ Memory sesi FAST dihapus. GitHub tidak disentuh."
 
         await send_text(
             chat_id,
-            "✅ Memory sesi dihapus.",
+            reset_msg,
         )
 
         return
@@ -4007,6 +4080,7 @@ Jangan mengarang ukuran yang tidak terlihat.
 
         return
 
+
     # ========================================================
     # PHOTO
     # ========================================================
@@ -4090,7 +4164,13 @@ Jangan mengarang ukuran yang tidak terlihat.
 
     try:
 
-        await load_persistent_memory(uid)
+        mode = get_conversation_mode(uid)
+        if mode == "AGENT":
+            # Always reload from GitHub so a fresh/redeployed instance gets the canonical memory.
+            await load_persistent_memory(uid)
+        else:
+            # FAST is deliberately stateless. Never read/write persistent memory.
+            memory[uid] = []
 
         await tg(
             "sendChatAction",
@@ -4106,20 +4186,11 @@ Jangan mengarang ukuran yang tidak terlihat.
             text,
         )
 
-        remember(
-            uid,
-            "user",
-            text,
-        )
-
-        # Simpan jawaban mentah agar header transparansi tidak ikut masuk memory.
-        remember(
-            uid,
-            "assistant",
-            answer,
-        )
-
-        await save_persistent_memory(uid)
+        if mode == "AGENT":
+            remember(uid, "user", text)
+            # Simpan jawaban mentah agar header transparansi tidak ikut masuk memory.
+            remember(uid, "assistant", answer)
+            await save_persistent_memory(uid)
 
         transparent_answer = format_transparent_response(answer, meta)
 
