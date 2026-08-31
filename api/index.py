@@ -9,6 +9,7 @@ import re
 import math
 import json
 from typing import Optional
+from collections import defaultdict
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -444,54 +445,72 @@ nvidia = (
 
 
 # ============================================================
-# MEMORY — SESSION + LONG-TERM + GITHUB
+# MEMORY
 # ============================================================
-# Sistem memori permanen:
-# 1. session_history  = percakapan terbaru untuk konteks langsung.
-# 2. long_term_memory = fakta/preferensi/proyek penting yang dipertahankan.
-# 3. conversation_archive = arsip percakapan lengkap di GitHub.
-#
-# Setiap user Telegram mempunyai file sendiri di repository memory.
-# Memory otomatis dimuat ketika update pertama masuk, termasuk /start.
 
 memory = {}
+MAX_MEMORY = 20
+
+# ============================================================
+# DUAL MODE: FAST vs AGENT
+# ============================================================
+# FAST  = tanpa memory/context persisten, paling ringan/cepat.
+# AGENT = memory + konteks pekerjaan + penyimpanan GitHub.
+CONVERSATION_MODE_FAST = "fast"
+CONVERSATION_MODE_AGENT = "agent"
+CONVERSATION_MODE_LABELS = {
+    CONVERSATION_MODE_FAST: "⚡ AI BIASA / FAST",
+    CONVERSATION_MODE_AGENT: "🧠 AI AGENT",
+}
+user_conversation_mode = {}
+
+# Penyimpanan memory jangka panjang dipisahkan dari history.
 long_term_memory = {}
-conversation_archive = {}
-loaded_memory_users = set()
-memory_locks = {}
+MAX_LONG_TERM_MEMORY = 100
 
-# Jumlah history yang dipakai LLM; arsip permanen tidak dibatasi oleh ini.
-MAX_MEMORY = 40
-MAX_CONTEXT_TURNS = 10
-MAX_CONTEXT_CHARS_PER_ITEM = 1600
-NVIDIA_MAX_CONTEXT_TURNS = 8
-NVIDIA_MAX_CONTEXT_CHARS_PER_ITEM = 1000
-OPENROUTER_MAX_OUTPUT_TOKENS = 2048
-
-# Batas aman ukuran file memori GitHub. Arsip tetap disimpan sebanyak mungkin,
-# tetapi bila file menjadi terlalu besar, arsip lama dipindahkan ke ringkasan.
-MAX_ARCHIVE_MESSAGES = 500
-MAX_MEMORY_FACTS = 100
-MAX_FACT_CHARS = 800
+# Proteksi duplicate update dan race-condition per user.
+PROCESSED_UPDATE_TTL = 900
+_processed_updates = {}
+_processed_updates_lock = asyncio.Lock()
+_user_locks = defaultdict(asyncio.Lock)
 
 # ============================================================
-# PEMILIHAN AI MANUAL + TRANSPARANSI
+# PEMILIHAN AI MANUAL + TRANSPARANSI (BARU — ADITIF)
 # ============================================================
+# Tidak menghapus/mengubah sistem smart router yang sudah ada.
+# Fitur ini hanya menambahkan:
+#   1) Cara user memaksa pakai 1 provider/gaya tertentu
+#   2) Info di setiap jawaban: AI mana yang berhasil / gagal,
+#      lengkap dengan riwayat routing seperti /model.
+
 AI_MODE_AUTO = "auto"
+
+# gaya NVIDIA (task_hint yang dipaksa, model tetap sama)
 NVIDIA_STYLE_TASK_MAP = {
     "nvidia_fast": "general",
     "nvidia_coding": "coding",
     "nvidia_technical": "technical",
     "nvidia_reasoning": "reasoning",
 }
+
 AI_MODE_CHOICES = {
-    "auto": "auto", "otomatis": "auto", "nvidia": "nvidia_fast",
-    "nvidia_fast": "nvidia_fast", "nvidia fast": "nvidia_fast",
-    "nvidia_coding": "nvidia_coding", "nvidia coding": "nvidia_coding",
-    "nvidia_technical": "nvidia_technical", "nvidia technical": "nvidia_technical",
-    "nvidia_reasoning": "nvidia_reasoning", "nvidia reasoning": "nvidia_reasoning",
-    "gemini": "gemini", "openrouter": "openrouter", "open router": "openrouter", "or": "openrouter",
+    "auto": "auto",
+    "otomatis": "auto",
+    "nvidia": "nvidia_fast",
+    "nvidia_fast": "nvidia_fast",
+    "nvidia fast": "nvidia_fast",
+    "nvidia_coding": "nvidia_coding",
+    "nvidia coding": "nvidia_coding",
+    "nvidia_technical": "nvidia_technical",
+    "nvidia technical": "nvidia_technical",
+    "nvidia_reasoning": "nvidia_reasoning",
+    "nvidia reasoning": "nvidia_reasoning",
+    "gemini": "gemini",
+    "openrouter": "openrouter",
+    "open router": "openrouter",
+    "or": "openrouter",
 }
+
 AI_MODE_LABELS = {
     "auto": "🔁 Otomatis (Smart Router + fallback)",
     "nvidia_fast": "⚡ NVIDIA Fast",
@@ -501,7 +520,53 @@ AI_MODE_LABELS = {
     "gemini": "👁️ Gemini",
     "openrouter": "🌐 OpenRouter FREE",
 }
+
+# uid(str) -> salah satu key di AI_MODE_LABELS
 user_ai_mode = {}
+
+
+def get_conversation_mode(uid):
+    return user_conversation_mode.get(str(uid), CONVERSATION_MODE_FAST)
+
+
+def set_conversation_mode(uid, mode):
+    if mode in CONVERSATION_MODE_LABELS:
+        user_conversation_mode[str(uid)] = mode
+
+
+def build_conversation_mode_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "⚡ AI BIASA / FAST", "callback_data": "convmode:fast"},
+                {"text": "🧠 AI AGENT", "callback_data": "convmode:agent"},
+            ],
+            [
+                {"text": "⚙️ Pilih AI / Model", "callback_data": "showaimode"},
+            ],
+        ]
+    }
+
+
+async def _mark_update_if_new(update_id):
+    """True jika update belum pernah diproses pada instance ini."""
+    if update_id is None:
+        return True
+    now = time.time()
+    async with _processed_updates_lock:
+        expired = [k for k, t in _processed_updates.items() if now - t > PROCESSED_UPDATE_TTL]
+        for k in expired:
+            _processed_updates.pop(k, None)
+        key = str(update_id)
+        if key in _processed_updates:
+            return False
+        _processed_updates[key] = now
+        # Batasi ukuran cache agar tidak membesar pada instance lama.
+        if len(_processed_updates) > 2000:
+            oldest = sorted(_processed_updates.items(), key=lambda x: x[1])[:500]
+            for k, _ in oldest:
+                _processed_updates.pop(k, None)
+        return True
 
 
 def get_ai_mode(uid):
@@ -513,106 +578,101 @@ def set_ai_mode(uid, mode):
 
 
 def build_ai_mode_keyboard():
+    """Inline keyboard untuk memilih AI secara manual (tombol)."""
+
     def btn(mode):
-        return {"text": AI_MODE_LABELS[mode], "callback_data": f"aimode:{mode}"}
-    return {"inline_keyboard": [
-        [btn("auto")],
-        [btn("nvidia_fast"), btn("nvidia_coding")],
-        [btn("nvidia_technical"), btn("nvidia_reasoning")],
-        [btn("gemini"), btn("openrouter")],
-    ]}
+        return {
+            "text": AI_MODE_LABELS[mode],
+            "callback_data": f"aimode:{mode}",
+        }
+
+    return {
+        "inline_keyboard": [
+            [btn("auto")],
+            [btn("nvidia_fast"), btn("nvidia_coding")],
+            [btn("nvidia_technical"), btn("nvidia_reasoning")],
+            [btn("gemini"), btn("openrouter")],
+        ]
+    }
+
 
 # ============================================================
-# GITHUB MEMORY CONFIG
+# PERSISTENT MEMORY — SEPARATE GITHUB REPOSITORY
 # ============================================================
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "Dinal7297/designmanufaktur-memory")
 GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
 GITHUB_MEMORY_DIR = "memory"
+GITHUB_ARCHIVE_DIR = "conversations"
 GITHUB_API = "https://api.github.com"
+
+# ============================================================
+# UPLOAD HASIL PEKERJAAN — REPO WEBSITE (terpisah dari repo memory)
+# ============================================================
+# Reuse GITHUB_TOKEN yang sama (asal token itu juga punya akses ke
+# repo website). Kalau perlu token berbeda, set WEBSITE_GITHUB_TOKEN
+# di environment variable hosting.
+WEBSITE_GITHUB_TOKEN = os.getenv("WEBSITE_GITHUB_TOKEN", GITHUB_TOKEN)
+WEBSITE_GITHUB_REPO = os.getenv("WEBSITE_GITHUB_REPO", "Dinal7297/Design-Manufaktur-")
+WEBSITE_GITHUB_BRANCH = os.getenv("WEBSITE_GITHUB_BRANCH", "main")
+WEBSITE_DATA_PATH = "data/pekerjaan.json"
+
+# ------------------------------------------------------------
+# BATAS KONTEKS YANG DIKIRIM KE LLM (BARU)
+# ------------------------------------------------------------
+# Terpisah dari MAX_MEMORY (yang tetap dipakai untuk penyimpanan
+# permanent memory di GitHub, TIDAK berubah). Ini hanya mengatur
+# berapa banyak riwayat yang benar-benar dikirim ke provider AI
+# per request, supaya tidak kena limit token/rate dari provider
+# gratis.
+MAX_CONTEXT_TURNS = 8
+MAX_CONTEXT_CHARS_PER_ITEM = 1200
+
+NVIDIA_MAX_CONTEXT_TURNS = 6
+NVIDIA_MAX_CONTEXT_CHARS_PER_ITEM = 800
+
+OPENROUTER_MAX_OUTPUT_TOKENS = 2048
 
 
 def history(uid):
     return memory.setdefault(str(uid), [])
 
 
-def _memory_state(uid):
-    uid = str(uid)
-    return {
-        "user_id": uid,
-        "version": 2,
-        "ai_mode": get_ai_mode(uid),
-        "long_term_memory": long_term_memory.get(uid, []),
-        "history": history(uid)[-MAX_MEMORY:],
-        "conversation_archive": conversation_archive.get(uid, [])[-MAX_ARCHIVE_MESSAGES:],
-        "updated_at": int(time.time()),
-    }
-
-
-def _normalise_memory_fact(text):
-    text = re.sub(r"\\s+", " ", str(text or "")).strip()
-    return text[:MAX_FACT_CHARS]
-
-
-def _add_long_term_fact(uid, fact, category="general"):
-    uid = str(uid)
-    fact = _normalise_memory_fact(fact)
-    if not fact or len(fact) < 4:
-        return False
-    facts = long_term_memory.setdefault(uid, [])
-    key = fact.lower()
-    for item in facts:
-        if str(item.get("fact", "")).lower() == key:
-            item["updated_at"] = int(time.time())
-            return False
-    facts.append({"fact": fact, "category": category, "updated_at": int(time.time())})
-    long_term_memory[uid] = facts[-MAX_MEMORY_FACTS:]
-    return True
-
-
-def _extract_long_term_memory(uid, role, content):
-    """Ekstraksi lokal tanpa API tambahan. Menyimpan pernyataan yang jelas
-    sebagai memori jangka panjang; semua pesan tetap masuk archive."""
-    if role != "user":
-        return
-    text = re.sub(r"\\s+", " ", str(content or "")).strip()
-    if not text:
-        return
-    low = text.lower()
-    patterns = [
-        (r"\\b(?:nama saya|saya bernama|nama usaha saya|usaha saya bernama)\\s+(.{2,200})", "identitas/usaha"),
-        (r"\\b(?:saya ingin|saya mau|tujuan saya|target saya|proyek saya)\\s+(.{5,300})", "tujuan/proyek"),
-        (r"\\b(?:ingat|ingatlah|tolong ingat|jangan lupa|catat|simpan)\\s*[:,-]?\\s*(.{5,400})", "instruksi/pengingat"),
-        (r"\\b(?:preferensi saya|saya lebih suka|saya suka|saya tidak suka)\\s+(.{5,300})", "preferensi"),
-        (r"\\b(?:gunakan|pakai|selalu gunakan|mulai sekarang)\\s+(.{5,300})", "preferensi kerja"),
-    ]
-    for pattern, category in patterns:
-        for match in re.finditer(pattern, text, flags=re.I):
-            fact = match.group(0).strip()
-            _add_long_term_fact(uid, fact, category)
-    # Kalimat eksplisit yang biasanya memang dimaksudkan untuk disimpan.
-    if any(x in low for x in ("simpan ini", "simpan sebagai memori", "ingat ini", "jadikan memori")):
-        _add_long_term_fact(uid, text, "explicit")
-
-
 def remember(uid, role, content):
     uid = str(uid)
-    item = {"role": role, "content": str(content or ""), "timestamp": int(time.time())}
-    history(uid).append(item)
+    history(uid).append({
+        "role": role,
+        "content": content,
+        "timestamp": int(time.time()),
+    })
     memory[uid] = history(uid)[-MAX_MEMORY:]
-    conversation_archive.setdefault(uid, []).append(item)
-    conversation_archive[uid] = conversation_archive[uid][-MAX_ARCHIVE_MESSAGES:]
-    _extract_long_term_memory(uid, role, content)
 
 
-def _trim_history_for_context(uid, max_turns=MAX_CONTEXT_TURNS,
-                              max_chars_per_item=MAX_CONTEXT_CHARS_PER_ITEM):
-    items = history(str(uid))[-max_turns:]
+def remember_long_term(uid, content, category="context"):
+    """Simpan fakta/context penting tanpa membatasi history percakapan."""
+    uid = str(uid)
+    item = {
+        "content": str(content).strip(),
+        "category": category,
+        "timestamp": int(time.time()),
+    }
+    if not item["content"]:
+        return
+    items = long_term_memory.setdefault(uid, [])
+    # Hindari duplikat persis.
+    if any(x.get("content") == item["content"] for x in items):
+        return
+    items.append(item)
+    long_term_memory[uid] = items[-MAX_LONG_TERM_MEMORY:]
+
+
+def _trim_history_for_context(uid, max_turns=MAX_CONTEXT_TURNS, max_chars_per_item=MAX_CONTEXT_CHARS_PER_ITEM):
+    items = history(uid)[-max_turns:]
     trimmed = []
     for m in items:
         content = m.get("content", "") or ""
         if len(content) > max_chars_per_item:
-            content = content[:max_chars_per_item] + "\n...(dipotong untuk hemat token)"
+            content = content[:max_chars_per_item] + "\n...(riwayat dipotong untuk hemat token)"
         trimmed.append({"role": m.get("role", "user"), "content": content})
     return trimmed
 
@@ -621,101 +681,112 @@ def _memory_path(uid):
     return f"{GITHUB_MEMORY_DIR}/{str(uid)}.json"
 
 
-def _memory_lock(uid):
-    uid = str(uid)
-    if uid not in memory_locks:
-        memory_locks[uid] = asyncio.Lock()
-    return memory_locks[uid]
+def _archive_path(uid):
+    return f"{GITHUB_ARCHIVE_DIR}/{str(uid)}.jsonl"
 
 
-async def load_persistent_memory(uid, force=False):
+async def load_persistent_memory(uid):
     uid = str(uid)
-    if uid in loaded_memory_users and not force:
-        return
-    async with _memory_lock(uid):
-        if uid in loaded_memory_users and not force:
-            return
+    if not GITHUB_TOKEN or not GITHUB_REPO:
         memory.setdefault(uid, [])
         long_term_memory.setdefault(uid, [])
-        conversation_archive.setdefault(uid, [])
-        if not GITHUB_TOKEN or not GITHUB_REPO:
-            loaded_memory_users.add(uid)
-            log.warning("MEMORY LOCAL ONLY | GITHUB_TOKEN/GITHUB_REPO belum tersedia")
+        return
+    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
+    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
+        if response.status_code == 404:
+            memory[uid] = []
+            long_term_memory[uid] = []
             return
-        url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
-        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-        try:
-            async with httpx.AsyncClient(timeout=20) as client:
-                response = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
-            if response.status_code == 404:
-                loaded_memory_users.add(uid)
-                return
-            response.raise_for_status()
-            encoded = response.json().get("content", "")
-            raw = base64.b64decode(encoded.replace("\n", "")).decode("utf-8") if encoded else "{}"
-            saved = json.loads(raw)
-            if isinstance(saved, dict):
-                saved_mode = saved.get("ai_mode")
-                if saved_mode in AI_MODE_LABELS:
-                    user_ai_mode[uid] = saved_mode
-                lt = saved.get("long_term_memory", [])
-                hist = saved.get("history", saved.get("memory", []))
-                archive = saved.get("conversation_archive", hist)
-            else:
-                lt, hist, archive = [], saved, saved
-            long_term_memory[uid] = lt if isinstance(lt, list) else []
-            memory[uid] = hist[-MAX_MEMORY:] if isinstance(hist, list) else []
-            conversation_archive[uid] = archive[-MAX_ARCHIVE_MESSAGES:] if isinstance(archive, list) else []
-            loaded_memory_users.add(uid)
-            log.info("PERSISTENT MEMORY LOAD OK | uid=%s | history=%s | facts=%s | archive=%s", uid, len(memory[uid]), len(long_term_memory[uid]), len(conversation_archive[uid]))
-        except Exception as e:
-            log.warning("PERSISTENT MEMORY LOAD FAILED | uid=%s | %s", uid, str(e)[:300])
-            # Jangan menimpa memori yang mungkin sudah ada di RAM.
-            loaded_memory_users.add(uid)
+        response.raise_for_status()
+        encoded = response.json().get("content", "")
+        raw = base64.b64decode(encoded.replace("\n", "")).decode("utf-8") if encoded else "{}"
+        saved = json.loads(raw)
+        if not isinstance(saved, dict):
+            saved = {"memory": saved if isinstance(saved, list) else []}
+        saved_mode = saved.get("ai_mode")
+        if saved_mode in AI_MODE_LABELS:
+            user_ai_mode[uid] = saved_mode
+        conv_mode = saved.get("conversation_mode")
+        if conv_mode in CONVERSATION_MODE_LABELS:
+            user_conversation_mode[uid] = conv_mode
+        hist = saved.get("memory", [])
+        ltm = saved.get("long_term_memory", [])
+        memory[uid] = hist[-MAX_MEMORY:] if isinstance(hist, list) else []
+        long_term_memory[uid] = ltm[-MAX_LONG_TERM_MEMORY:] if isinstance(ltm, list) else []
+        log.info("PERSISTENT MEMORY LOAD OK | uid=%s | history=%s | long_term=%s | mode=%s", uid, len(memory[uid]), len(long_term_memory[uid]), get_conversation_mode(uid))
+    except Exception as e:
+        log.warning("PERSISTENT MEMORY LOAD FAILED | uid=%s | %s", uid, str(e)[:300])
+        memory.setdefault(uid, [])
+        long_term_memory.setdefault(uid, [])
 
 
 async def save_persistent_memory(uid):
     uid = str(uid)
     if not GITHUB_TOKEN or not GITHUB_REPO:
         log.warning("PERSISTENT MEMORY SAVE SKIPPED | GITHUB_TOKEN/GITHUB_REPO belum tersedia")
-        return False
-    async with _memory_lock(uid):
-        raw = json.dumps(_memory_state(uid), ensure_ascii=False, indent=2)
-        encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
-        url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
-        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-        try:
-            async with httpx.AsyncClient(timeout=20) as client:
-                current = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
-                body = {"message": f"memory: update {uid}", "content": encoded, "branch": GITHUB_BRANCH}
-                if current.status_code == 200:
-                    body["sha"] = current.json().get("sha")
-                elif current.status_code != 404:
-                    current.raise_for_status()
-                saved = await client.put(url, headers=headers, json=body)
-            if saved.status_code not in (200, 201):
-                saved.raise_for_status()
-            loaded_memory_users.add(uid)
-            log.info("PERSISTENT MEMORY SAVE OK | uid=%s", uid)
-            return True
-        except Exception as e:
-            log.warning("PERSISTENT MEMORY SAVE FAILED | uid=%s | %s", uid, str(e)[:300])
-            return False
+        return
+    raw = json.dumps({
+        "user_id": uid,
+        "memory": history(uid)[-MAX_MEMORY:],
+        "long_term_memory": long_term_memory.get(uid, [])[-MAX_LONG_TERM_MEMORY:],
+        "ai_mode": get_ai_mode(uid),
+        "conversation_mode": get_conversation_mode(uid),
+        "updated_at": int(time.time()),
+    }, ensure_ascii=False, indent=2)
+    encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
+    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
+    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            current = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
+            body = {"message": f"memory: update {uid}", "content": encoded, "branch": GITHUB_BRANCH}
+            if current.status_code == 200:
+                body["sha"] = current.json().get("sha")
+            elif current.status_code != 404:
+                current.raise_for_status()
+            saved = await client.put(url, headers=headers, json=body)
+        if saved.status_code not in (200, 201):
+            saved.raise_for_status()
+        log.info("PERSISTENT MEMORY SAVE OK | uid=%s", uid)
+    except Exception as e:
+        log.warning("PERSISTENT MEMORY SAVE FAILED | uid=%s | %s", uid, str(e)[:300])
 
 
-async def clear_session_memory(uid):
+async def archive_agent_message(uid, role, content):
+    """Arsip seluruh percakapan Agent secara append-only di GitHub."""
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return
     uid = str(uid)
-    memory[uid] = []
-    # Archive dan long-term memory sengaja TIDAK dihapus.
-    await save_persistent_memory(uid)
-
-
-async def clear_all_memory(uid):
-    uid = str(uid)
-    memory[uid] = []
-    long_term_memory[uid] = []
-    conversation_archive[uid] = []
-    await save_persistent_memory(uid)
+    # Untuk mencegah commit terlalu banyak, arsip digabung ke file JSONL.
+    path = _archive_path(uid)
+    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{path}"
+    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            current = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
+            existing = ""
+            sha = None
+            if current.status_code == 200:
+                data = current.json()
+                sha = data.get("sha")
+                encoded = data.get("content", "")
+                if encoded:
+                    existing = base64.b64decode(encoded.replace("\n", "")).decode("utf-8")
+            elif current.status_code != 404:
+                current.raise_for_status()
+            line = json.dumps({"timestamp": int(time.time()), "role": role, "content": str(content)}, ensure_ascii=False)
+            new_content = existing + ("\n" if existing and not existing.endswith("\n") else "") + line + "\n"
+            body = {"message": f"conversation: {uid}", "content": base64.b64encode(new_content.encode("utf-8")).decode("ascii"), "branch": GITHUB_BRANCH}
+            if sha:
+                body["sha"] = sha
+            result = await client.put(url, headers=headers, json=body)
+            if result.status_code not in (200, 201):
+                result.raise_for_status()
+    except Exception as e:
+        log.warning("CONVERSATION ARCHIVE FAILED | uid=%s | %s", uid, str(e)[:300])
 
 
 # ============================================================
@@ -883,45 +954,119 @@ async def upload_pekerjaan_from_photo(photo_bytes, category_raw, location_raw):
     return entry
 
 
-def build_messages(uid, text, task, max_turns=MAX_CONTEXT_TURNS,
-                    max_chars_per_item=MAX_CONTEXT_CHARS_PER_ITEM):
+def build_messages(
+    uid,
+    text,
+    task,
+    max_turns=MAX_CONTEXT_TURNS,
+    max_chars_per_item=MAX_CONTEXT_CHARS_PER_ITEM,
+    conversation_mode=CONVERSATION_MODE_AGENT,
+):
+
     task_hint = {
-        "coding": "TUGAS CODING. Prioritaskan kode yang dapat dijalankan, ketepatan sintaks, debugging, struktur program, dan solusi praktis.",
-        "reasoning": "TUGAS REASONING. Analisis masalah secara sistematis dan validasi kesimpulan.",
-        "technical": "TUGAS TEKNIK/MANUFAKTUR. Prioritaskan ukuran, material, rangka, fabrikasi, cutting list, sambungan, efisiensi material, asumsi teknik, dan pekerjaan sipil.",
-        "civil": "TUGAS CIVIL CALCULATOR. Prioritaskan volume, dimensi, kebutuhan material, besi, pondasi, dinding, plester, acian, galian, dan urugan. Jangan mengarang data.",
-        "math": "TUGAS MATEMATIKA. Hitung dengan teliti, tampilkan rumus penting, satuan, dan periksa hasil.",
-        "creative": "TUGAS KREATIF. Buat hasil yang siap digunakan, praktis, menarik, dan sesuai tujuan.",
-        "general": "TUGAS UMUM. Jawab langsung, jelas, dan berguna.",
+
+        "coding": """
+TUGAS CODING.
+
+Prioritaskan:
+- kode yang dapat dijalankan
+- ketepatan sintaks
+- debugging
+- struktur program
+- solusi praktis
+""",
+
+        "reasoning": """
+TUGAS REASONING.
+
+Analisis masalah secara sistematis.
+Periksa kemungkinan penyebab.
+Validasi kesimpulan sebelum menjawab.
+""",
+
+        "technical": """
+TUGAS TEKNIK/MANUFAKTUR.
+
+Prioritaskan:
+- ukuran
+- material
+- rangka
+- fabrikasi
+- cutting list
+- jumlah batang
+- sambungan
+- efisiensi material
+- asumsi teknik
+- pekerjaan sipil
+
+Untuk cutting list:
+WAJIB validasi seluruh angka sebelum menjawab.
+""",
+
+        "civil": """
+TUGAS CIVIL CALCULATOR.
+
+Prioritaskan:
+- volume
+- dimensi
+- kebutuhan material
+- semen
+- pasir
+- kerikil
+- air
+- besi
+- berat besi
+- pondasi
+- dinding
+- plester
+- acian
+- galian
+- urugan
+
+Jika data tidak diberikan:
+jangan mengarang.
+
+Untuk struktur:
+hasil adalah estimasi awal,
+bukan pengganti desain engineer.
+""",
+
+        "math": """
+TUGAS MATEMATIKA.
+
+Hitung dengan teliti.
+Tampilkan rumus penting.
+Gunakan satuan.
+Periksa kembali hasil.
+""",
+
+        "creative": """
+TUGAS KREATIF.
+
+Buat hasil yang siap digunakan,
+praktis, menarik, dan sesuai tujuan.
+""",
+
+        "general": """
+TUGAS UMUM.
+
+Jawab langsung, jelas, dan berguna.
+""",
+
     }.get(task, "")
 
-    uid = str(uid)
-    facts = long_term_memory.get(uid, [])
-    memory_text = "Belum ada memori jangka panjang tersimpan."
-    if facts:
-        memory_lines = []
-        for item in facts[-MAX_MEMORY_FACTS:]:
-            fact = item.get("fact", "") if isinstance(item, dict) else str(item)
-            category = item.get("category", "general") if isinstance(item, dict) else "general"
-            if fact:
-                memory_lines.append(f"• [{category}] {fact}")
-        memory_text = "\n".join(memory_lines)
-
-    system = SYSTEM + "\n\n" + task_hint + """
-
-============================================================
-MEMORI JANGKA PANJANG PENGGUNA
-============================================================
-Gunakan memori di bawah ini sebagai konteks yang sudah diketahui.
-Jangan menyebutkan memori kecuali relevan dengan pertanyaan.
-Jika memori bertentangan dengan pesan terbaru pengguna, prioritaskan
-pesan terbaru dan jangan mengarang.
-
-""" + memory_text
-
-    return [{"role": "system", "content": system}] + _trim_history_for_context(
-        uid, max_turns, max_chars_per_item
-    ) + [{"role": "user", "content": text}]
+    system_content = SYSTEM + "\n\n" + task_hint
+    if conversation_mode == CONVERSATION_MODE_AGENT:
+        ltm = long_term_memory.get(str(uid), [])
+        if ltm:
+            system_content += "\n\nMEMORI JANGKA PANJANG PENGGUNA:\n" + "\n".join(
+                f"• [{x.get('category', 'context')}] {x.get('content', '')}"
+                for x in ltm[-MAX_LONG_TERM_MEMORY:]
+            )
+        context = _trim_history_for_context(uid, max_turns, max_chars_per_item)
+    else:
+        context = []
+    return [{"role": "system", "content": system_content}] + context + [{"role": "user", "content": text}]
 
 
 # ============================================================
@@ -2230,7 +2375,7 @@ def classify_task(text):
 # OPENROUTER
 # ============================================================
 
-def call_openrouter(uid, text, task, model=None):
+def call_openrouter(uid, text, task, model=None, conversation_mode=CONVERSATION_MODE_AGENT):
 
     if not openrouter:
         raise RuntimeError(
@@ -2244,7 +2389,8 @@ def call_openrouter(uid, text, task, model=None):
         messages=build_messages(
             uid,
             text,
-            task
+            task,
+            conversation_mode=conversation_mode,
         ),
         max_tokens=OPENROUTER_MAX_OUTPUT_TOKENS,
         extra_headers={
@@ -2277,7 +2423,7 @@ def call_openrouter(uid, text, task, model=None):
 # GEMINI
 # ============================================================
 
-def call_gemini(uid, text, task):
+def call_gemini(uid, text, task, conversation_mode=CONVERSATION_MODE_AGENT):
 
     if not gemini:
         raise RuntimeError(
@@ -2322,10 +2468,22 @@ jangan menyatakan aman tanpa perhitungan engineering.
 
     }.get(task, "")
 
-    messages = build_messages(uid, text, task)
-    prompt = "\n\n".join(
-        f"{m['role']}: {m['content']}" for m in messages
+    prompt = (
+        SYSTEM
+        + "\n\n"
+        + task_hint
+        + "\n\n"
     )
+
+    if conversation_mode == CONVERSATION_MODE_AGENT:
+        ltm = long_term_memory.get(str(uid), [])
+        if ltm:
+            prompt += "\nMEMORI JANGKA PANJANG:\n"
+            prompt += "\n".join(f"- {x.get('content', '')}" for x in ltm[-MAX_LONG_TERM_MEMORY:]) + "\n"
+        for m in _trim_history_for_context(uid):
+            prompt += f"{m['role']}: {m['content']}\n"
+
+    prompt += f"user: {text}"
 
     r = gemini.models.generate_content(
         model=GEMINI_CHAT_MODEL,
@@ -2346,7 +2504,7 @@ jangan menyatakan aman tanpa perhitungan engineering.
 # NVIDIA
 # ============================================================
 
-def call_nvidia(uid, text, task, model=None):
+def call_nvidia(uid, text, task, model=None, conversation_mode=CONVERSATION_MODE_AGENT):
 
     if not nvidia:
         raise RuntimeError(
@@ -2363,6 +2521,7 @@ def call_nvidia(uid, text, task, model=None):
             task,
             max_turns=NVIDIA_MAX_CONTEXT_TURNS,
             max_chars_per_item=NVIDIA_MAX_CONTEXT_CHARS_PER_ITEM,
+            conversation_mode=conversation_mode,
         ),
         max_tokens=NVIDIA_MAX_OUTPUT_TOKENS,
         temperature=1,
@@ -2436,7 +2595,7 @@ def _call_with_retry(fn, retries=1, base_delay=1.5):
 # SMART CHAT ROUTER
 # ============================================================
 
-def chat_router(uid, text, ai_mode="auto"):
+def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_AGENT):
 
     start_time = time.time()
 
@@ -2484,6 +2643,7 @@ def chat_router(uid, text, ai_mode="auto"):
                     uid,
                     text,
                     task,
+                    conversation_mode=conversation_mode,
                 ),
             ),
             (
@@ -2491,7 +2651,8 @@ def chat_router(uid, text, ai_mode="auto"):
                 lambda: call_openrouter(
                     uid,
                     text,
-                    task
+                    task,
+                    conversation_mode=conversation_mode,
                 ),
             ),
             (
@@ -2501,6 +2662,7 @@ def chat_router(uid, text, ai_mode="auto"):
                     text,
                     task,
                     model=OPENROUTER_BACKUP_MODEL,
+                    conversation_mode=conversation_mode,
                 ),
             ),
             (
@@ -2508,7 +2670,8 @@ def chat_router(uid, text, ai_mode="auto"):
                 lambda: call_gemini(
                     uid,
                     text,
-                    task
+                    task,
+                    conversation_mode=conversation_mode,
                 ),
             ),
         ]
@@ -2522,6 +2685,7 @@ def chat_router(uid, text, ai_mode="auto"):
                     uid,
                     text,
                     "coding",
+                    conversation_mode=conversation_mode,
                 ),
             ),
             (
@@ -2529,7 +2693,8 @@ def chat_router(uid, text, ai_mode="auto"):
                 lambda: call_openrouter(
                     uid,
                     text,
-                    task
+                    task,
+                    conversation_mode=conversation_mode,
                 ),
             ),
             (
@@ -2539,6 +2704,7 @@ def chat_router(uid, text, ai_mode="auto"):
                     text,
                     task,
                     model=OPENROUTER_BACKUP_MODEL,
+                    conversation_mode=conversation_mode,
                 ),
             ),
             (
@@ -2546,7 +2712,8 @@ def chat_router(uid, text, ai_mode="auto"):
                 lambda: call_gemini(
                     uid,
                     text,
-                    task
+                    task,
+                    conversation_mode=conversation_mode,
                 ),
             ),
         ]
@@ -2563,6 +2730,7 @@ def chat_router(uid, text, ai_mode="auto"):
                     uid,
                     text,
                     "reasoning",
+                    conversation_mode=conversation_mode,
                 ),
             ),
             (
@@ -2570,7 +2738,8 @@ def chat_router(uid, text, ai_mode="auto"):
                 lambda: call_openrouter(
                     uid,
                     text,
-                    task
+                    task,
+                    conversation_mode=conversation_mode,
                 ),
             ),
             (
@@ -2580,6 +2749,7 @@ def chat_router(uid, text, ai_mode="auto"):
                     text,
                     task,
                     model=OPENROUTER_BACKUP_MODEL,
+                    conversation_mode=conversation_mode,
                 ),
             ),
             (
@@ -2587,7 +2757,8 @@ def chat_router(uid, text, ai_mode="auto"):
                 lambda: call_gemini(
                     uid,
                     text,
-                    task
+                    task,
+                    conversation_mode=conversation_mode,
                 ),
             ),
         ]
@@ -2602,6 +2773,7 @@ def chat_router(uid, text, ai_mode="auto"):
                     uid,
                     text,
                     task,
+                    conversation_mode=conversation_mode,
                 ),
             ),
             (
@@ -2609,7 +2781,8 @@ def chat_router(uid, text, ai_mode="auto"):
                 lambda: call_openrouter(
                     uid,
                     text,
-                    task
+                    task,
+                    conversation_mode=conversation_mode,
                 ),
             ),
             (
@@ -2619,6 +2792,7 @@ def chat_router(uid, text, ai_mode="auto"):
                     text,
                     task,
                     model=OPENROUTER_BACKUP_MODEL,
+                    conversation_mode=conversation_mode,
                 ),
             ),
             (
@@ -2626,7 +2800,8 @@ def chat_router(uid, text, ai_mode="auto"):
                 lambda: call_gemini(
                     uid,
                     text,
-                    task
+                    task,
+                    conversation_mode=conversation_mode,
                 ),
             ),
         ]
@@ -2647,6 +2822,7 @@ def chat_router(uid, text, ai_mode="auto"):
                     uid,
                     text,
                     forced_task,
+                    conversation_mode=conversation_mode,
                 ),
             ),
         ]
@@ -3762,77 +3938,55 @@ def command_arg(text):
 # ============================================================
 
 async def handle_callback_query(callback_query):
-
     data = callback_query.get("data", "") or ""
-
-    chat_id = (
-        callback_query.get("message", {})
-        .get("chat", {})
-        .get("id")
-    )
-
-    uid = str(
-        callback_query.get("from", {})
-        .get("id", chat_id)
-    )
-
+    chat_id = callback_query.get("message", {}).get("chat", {}).get("id")
+    uid = str(callback_query.get("from", {}).get("id", chat_id))
     cq_id = callback_query.get("id")
-
-    if not data.startswith("aimode:"):
-
-        if cq_id:
-            try:
-                await tg(
-                    "answerCallbackQuery",
-                    {"callback_query_id": cq_id},
-                )
-            except Exception:
-                pass
-
-        return
-
-    mode = data.split(":", 1)[1]
-
-    if mode not in AI_MODE_LABELS:
-
-        if cq_id:
-            try:
-                await tg(
-                    "answerCallbackQuery",
-                    {
-                        "callback_query_id": cq_id,
-                        "text": "❌ Pilihan tidak dikenali.",
-                        "show_alert": False,
-                    },
-                )
-            except Exception:
-                pass
-
-        return
-
-    await load_persistent_memory(uid)
-    set_ai_mode(uid, mode)
-    await save_persistent_memory(uid)
-
-    label = AI_MODE_LABELS[mode]
 
     if cq_id:
         try:
-            await tg(
-                "answerCallbackQuery",
-                {
-                    "callback_query_id": cq_id,
-                    "text": f"Mode diubah ke {label}",
-                },
-            )
+            await tg("answerCallbackQuery", {"callback_query_id": cq_id})
         except Exception:
             pass
 
-    if chat_id:
-        await send_text(
-            chat_id,
-            f"✅ Mode AI diubah ke:\n{label}",
-        )
+    if data == "showaimode":
+        if chat_id:
+            await send_text(chat_id, "⚙️ Pilih AI/model yang ingin digunakan:", reply_markup=build_ai_mode_keyboard())
+        return
+
+    if data.startswith("convmode:"):
+        mode = data.split(":", 1)[1]
+        if mode not in CONVERSATION_MODE_LABELS:
+            return
+        async with _user_locks[uid]:
+            # Hanya Agent yang membaca/menyimpan memory. FAST tidak menyentuh memory.
+            if mode == CONVERSATION_MODE_AGENT:
+                await load_persistent_memory(uid)
+            set_conversation_mode(uid, mode)
+            await save_persistent_memory(uid)
+        if cq_id:
+            try:
+                await tg("answerCallbackQuery", {"callback_query_id": cq_id, "text": f"Mode: {CONVERSATION_MODE_LABELS[mode]}"})
+            except Exception:
+                pass
+        if chat_id:
+            if mode == CONVERSATION_MODE_AGENT:
+                msg = "🧠 AI AGENT AKTIF\n\nMemory GitHub dan konteks pekerjaan akan digunakan dan disimpan otomatis."
+            else:
+                msg = "⚡ AI BIASA / FAST AKTIF\n\nMode ini tidak membaca atau menyimpan memory Agent."
+            await send_text(chat_id, msg, reply_markup=build_conversation_mode_keyboard())
+        return
+
+    if data.startswith("aimode:"):
+        mode = data.split(":", 1)[1]
+        if mode not in AI_MODE_LABELS:
+            return
+        async with _user_locks[uid]:
+            set_ai_mode(uid, mode)
+            if get_conversation_mode(uid) == CONVERSATION_MODE_AGENT:
+                await save_persistent_memory(uid)
+        if chat_id:
+            await send_text(chat_id, f"✅ Provider AI diubah ke:\n{AI_MODE_LABELS[mode]}")
 
 
 # ============================================================
@@ -3866,9 +4020,6 @@ async def handle(update):
         .get("id", chat_id)
     )
 
-    # MEMORI OTOMATIS: selalu pulihkan dari GitHub sebelum memproses update.
-    await load_persistent_memory(uid)
-
     text = (
         message.get(
             "text",
@@ -3893,6 +4044,11 @@ async def handle(update):
         "/start"
     ):
 
+        # /start adalah titik pemulihan state. Setelah state dimuat,
+        # chat FAST berikutnya tidak perlu membaca GitHub lagi.
+        async with _user_locks[uid]:
+            await load_persistent_memory(uid)
+        current_mode = get_conversation_mode(uid)
         await send_text(
             chat_id,
             """
@@ -3966,8 +4122,10 @@ Perintah:
 
 /model
 /ai
-/reset          = hapus sesi, memori permanen tetap ada
-/forget_memory  = hapus SEMUA memori permanen
+/mode
+/reset
+/ingat <informasi penting>
+/forget_memory
 /gambar <prompt>
 
 📸 UPLOAD HASIL PEKERJAAN KE WEBSITE
@@ -3977,7 +4135,10 @@ Contoh: /pekerjaan kanopi cibinong
 
 ⚠️ Untuk struktur:
 hasil material bukan pengganti desain engineer.
+
+MODE SAAT INI: """ + CONVERSATION_MODE_LABELS.get(current_mode, CONVERSATION_MODE_LABELS[CONVERSATION_MODE_FAST]) + """
 """,
+            reply_markup=build_conversation_mode_keyboard(),
         )
 
         return
@@ -3986,16 +4147,51 @@ hasil material bukan pengganti desain engineer.
     # RESET
     # ========================================================
 
-    if text.startswith("/reset"):
-        await load_persistent_memory(uid)
-        await clear_session_memory(uid)
-        await send_text(chat_id, "✅ Riwayat sesi aktif dihapus. 🧠 Memori permanen tetap tersimpan di GitHub.")
+    if text.startswith(
+        "/reset"
+    ):
+
+        memory.pop(uid, None)
+        memory[uid] = []
+        if get_conversation_mode(uid) == CONVERSATION_MODE_AGENT:
+            await save_persistent_memory(uid)
+        await send_text(chat_id, "✅ Riwayat sesi dihapus. 🧠 Memory jangka panjang tetap tersimpan.")
+
         return
 
+    # ========================================================
+    # FORGET LONG-TERM MEMORY
+    # ========================================================
     if text.startswith("/forget_memory") or text.startswith("/hapus_memori"):
-        await load_persistent_memory(uid)
-        await clear_all_memory(uid)
-        await send_text(chat_id, "🗑️ Semua memori permanen, riwayat sesi, dan arsip percakapan user ini sudah dihapus dari data bot dan diperbarui di GitHub.")
+        async with _user_locks[uid]:
+            long_term_memory[uid] = []
+            memory[uid] = []
+            if get_conversation_mode(uid) == CONVERSATION_MODE_AGENT:
+                await save_persistent_memory(uid)
+        await send_text(chat_id, "🗑️ Memory jangka panjang dan riwayat sesi user ini sudah dihapus dari memory bot.")
+        return
+
+    # ========================================================
+    # MODE FAST / AGENT
+    # ========================================================
+    if text.startswith("/mode"):
+        mode = command_arg(text).strip().lower()
+        if mode in ("fast", "biasa", "normal"):
+            set_conversation_mode(uid, CONVERSATION_MODE_FAST)
+            await save_persistent_memory(uid)
+        elif mode in ("agent", "agen", "memory"):
+            async with _user_locks[uid]:
+                await load_persistent_memory(uid)
+                set_conversation_mode(uid, CONVERSATION_MODE_AGENT)
+                await save_persistent_memory(uid)
+        elif not mode:
+            current = get_conversation_mode(uid)
+            await send_text(chat_id, f"🤖 Mode saat ini: {CONVERSATION_MODE_LABELS[current]}", reply_markup=build_conversation_mode_keyboard())
+            return
+        else:
+            await send_text(chat_id, "Gunakan /mode fast atau /mode agent")
+            return
+        await send_text(chat_id, f"✅ Mode diubah ke:\n{CONVERSATION_MODE_LABELS[get_conversation_mode(uid)]}", reply_markup=build_conversation_mode_keyboard())
         return
 
     # ========================================================
@@ -4005,8 +4201,6 @@ hasil material bukan pengganti desain engineer.
     if text.startswith(
         "/model"
     ):
-
-        await load_persistent_memory(uid)
 
         current_mode = get_ai_mode(uid)
         current_label = AI_MODE_LABELS.get(
@@ -4037,11 +4231,8 @@ Pollinations (fallback): {'✅ AKTIF' if POLLINATIONS_ENABLED else '❌ TIDAK AK
 👇 Tap tombol untuk ganti AI secara manual:
 """
 
-        await send_text(
-            chat_id,
-            status_text,
-            reply_markup=build_ai_mode_keyboard(),
-        )
+        status_text += f"\n\n🤖 Mode percakapan: {CONVERSATION_MODE_LABELS[get_conversation_mode(uid)]}\n🧠 Memory Agent: {'AKTIF' if get_conversation_mode(uid) == CONVERSATION_MODE_AGENT else 'NONAKTIF'}"
+        await send_text(chat_id, status_text, reply_markup=build_conversation_mode_keyboard())
 
         return
 
@@ -4052,8 +4243,6 @@ Pollinations (fallback): {'✅ AKTIF' if POLLINATIONS_ENABLED else '❌ TIDAK AK
     if text.startswith(
         "/ai"
     ):
-
-        await load_persistent_memory(uid)
 
         arg = command_arg(text).strip().lower()
 
@@ -4139,6 +4328,24 @@ Pilihan:
             f"✅ Mode AI diubah ke:\n{AI_MODE_LABELS[mode]}",
         )
 
+        return
+
+    # ========================================================
+    # SAVE EXPLICIT LONG-TERM MEMORY
+    # ========================================================
+    if text.startswith("/ingat") or text.startswith("/remember"):
+        if get_conversation_mode(uid) != CONVERSATION_MODE_AGENT:
+            await send_text(chat_id, "⚡ Anda sedang di FAST MODE. Aktifkan 🧠 AI AGENT terlebih dahulu agar memory bisa disimpan.", reply_markup=build_conversation_mode_keyboard())
+            return
+        fact = command_arg(text)
+        if not fact:
+            await send_text(chat_id, "Format: /ingat <informasi yang harus saya ingat>")
+            return
+        async with _user_locks[uid]:
+            await load_persistent_memory(uid)
+            remember_long_term(uid, fact, "user_instruction")
+            await save_persistent_memory(uid)
+        await send_text(chat_id, "🧠 Tersimpan sebagai memory jangka panjang.")
         return
 
     # ========================================================
@@ -4438,62 +4645,70 @@ Jangan mengarang ukuran yang tidak terlihat.
 
     try:
 
-        await load_persistent_memory(uid)
+        conversation_mode = get_conversation_mode(uid)
 
-        await tg(
-            "sendChatAction",
-            {
-                "chat_id": chat_id,
-                "action": "typing",
-            },
-        )
+        # Satu user tidak boleh menjalankan dua request Agent bersamaan:
+        # ini mencegah memory GitHub saling menimpa. FAST juga memakai lock
+        # ringan, tetapi TIDAK membaca/menulis memory selama chat berlangsung.
+        async with _user_locks[uid]:
+            if conversation_mode == CONVERSATION_MODE_AGENT:
+                await load_persistent_memory(uid)
 
-        ai_mode = get_ai_mode(uid)
+            await tg(
+                "sendChatAction",
+                {
+                    "chat_id": chat_id,
+                    "action": "typing",
+                },
+            )
 
-        (
-            answer,
-            provider,
-            model,
-            task,
-            attempts,
-            elapsed,
-        ) = await asyncio.to_thread(
-            chat_router,
-            uid,
-            text,
-            ai_mode,
-        )
+            ai_mode = get_ai_mode(uid)
 
-        remember(
-            uid,
-            "user",
-            text,
-        )
-
-        remember(
-            uid,
-            "assistant",
-            answer,
-        )
-
-        await save_persistent_memory(uid)
-
-        await send_text(
-            chat_id,
-            answer,
-        )
-
-        await send_text(
-            chat_id,
-            _build_transparency_footer(
+            (
+                answer,
                 provider,
                 model,
                 task,
-                ai_mode,
                 attempts,
                 elapsed,
-            ),
-        )
+            ) = await asyncio.to_thread(
+                chat_router,
+                uid,
+                text,
+                ai_mode,
+                conversation_mode,
+            )
+
+            if conversation_mode == CONVERSATION_MODE_AGENT:
+                remember(uid, "user", text)
+                remember(uid, "assistant", answer)
+                await archive_agent_message(uid, "user", text)
+                await archive_agent_message(uid, "assistant", answer)
+
+                # Auto-memory ringan: fakta/preferences yang jelas dari user
+                # dipromosikan ke long-term memory tanpa menyimpan semua chat
+                # sebagai prompt permanen. Seluruh chat tetap ada di archive.
+                low = text.lower().strip()
+                memory_markers = (
+                    "saya ", "kami ", "usaha saya", "bisnis saya",
+                    "proyek saya", "pekerjaan saya", "gunakan ",
+                    "jangan ", "biasanya ", "preferensi", "mulai sekarang",
+                    "seterusnya", "ingat bahwa", "ingat ini"
+                )
+                has_dimension = bool(re.search(r"\b\d+(?:[.,]\d+)?\s*(?:m|cm|mm|meter|kg|ton|batang)\b", low))
+                if any(marker in low for marker in memory_markers) or has_dimension:
+                    remember_long_term(uid, text, "auto_context")
+
+                await save_persistent_memory(uid)
+
+            combined = answer + "\n\n" + _build_transparency_footer(
+                provider, model, task, ai_mode, attempts, elapsed
+            )
+            await send_text(
+                chat_id,
+                combined,
+                reply_markup=build_conversation_mode_keyboard(),
+            )
 
         log.info(
             "CHAT DONE | task=%s | provider=%s | model=%s | mode=%s | waktu=%s",
@@ -4531,6 +4746,11 @@ async def root():
 
         "free_only":
             True,
+
+        "conversation_modes": {
+            "fast": "No persistent memory/context",
+            "agent": "Persistent GitHub memory + context",
+        },
 
         "telegram_format":
             "clean_and_mobile_friendly",
@@ -4627,9 +4847,12 @@ async def webhook_impl(
 
     update = await request.json()
 
-    await handle(
-        update
-    )
+    update_id = update.get("update_id")
+    if not await _mark_update_if_new(update_id):
+        log.info("DUPLICATE TELEGRAM UPDATE IGNORED | update_id=%s", update_id)
+        return {"ok": True, "duplicate": True}
+
+    await handle(update)
 
     return {
         "ok": True
