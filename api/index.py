@@ -444,49 +444,54 @@ nvidia = (
 
 
 # ============================================================
-# MEMORY
+# MEMORY — SESSION + LONG-TERM + GITHUB
 # ============================================================
+# Sistem memori permanen:
+# 1. session_history  = percakapan terbaru untuk konteks langsung.
+# 2. long_term_memory = fakta/preferensi/proyek penting yang dipertahankan.
+# 3. conversation_archive = arsip percakapan lengkap di GitHub.
+#
+# Setiap user Telegram mempunyai file sendiri di repository memory.
+# Memory otomatis dimuat ketika update pertama masuk, termasuk /start.
 
 memory = {}
-MAX_MEMORY = 20
+long_term_memory = {}
+conversation_archive = {}
+loaded_memory_users = set()
+memory_locks = {}
+
+# Jumlah history yang dipakai LLM; arsip permanen tidak dibatasi oleh ini.
+MAX_MEMORY = 40
+MAX_CONTEXT_TURNS = 10
+MAX_CONTEXT_CHARS_PER_ITEM = 1600
+NVIDIA_MAX_CONTEXT_TURNS = 8
+NVIDIA_MAX_CONTEXT_CHARS_PER_ITEM = 1000
+OPENROUTER_MAX_OUTPUT_TOKENS = 2048
+
+# Batas aman ukuran file memori GitHub. Arsip tetap disimpan sebanyak mungkin,
+# tetapi bila file menjadi terlalu besar, arsip lama dipindahkan ke ringkasan.
+MAX_ARCHIVE_MESSAGES = 500
+MAX_MEMORY_FACTS = 100
+MAX_FACT_CHARS = 800
 
 # ============================================================
-# PEMILIHAN AI MANUAL + TRANSPARANSI (BARU — ADITIF)
+# PEMILIHAN AI MANUAL + TRANSPARANSI
 # ============================================================
-# Tidak menghapus/mengubah sistem smart router yang sudah ada.
-# Fitur ini hanya menambahkan:
-#   1) Cara user memaksa pakai 1 provider/gaya tertentu
-#   2) Info di setiap jawaban: AI mana yang berhasil / gagal,
-#      lengkap dengan riwayat routing seperti /model.
-
 AI_MODE_AUTO = "auto"
-
-# gaya NVIDIA (task_hint yang dipaksa, model tetap sama)
 NVIDIA_STYLE_TASK_MAP = {
     "nvidia_fast": "general",
     "nvidia_coding": "coding",
     "nvidia_technical": "technical",
     "nvidia_reasoning": "reasoning",
 }
-
 AI_MODE_CHOICES = {
-    "auto": "auto",
-    "otomatis": "auto",
-    "nvidia": "nvidia_fast",
-    "nvidia_fast": "nvidia_fast",
-    "nvidia fast": "nvidia_fast",
-    "nvidia_coding": "nvidia_coding",
-    "nvidia coding": "nvidia_coding",
-    "nvidia_technical": "nvidia_technical",
-    "nvidia technical": "nvidia_technical",
-    "nvidia_reasoning": "nvidia_reasoning",
-    "nvidia reasoning": "nvidia_reasoning",
-    "gemini": "gemini",
-    "openrouter": "openrouter",
-    "open router": "openrouter",
-    "or": "openrouter",
+    "auto": "auto", "otomatis": "auto", "nvidia": "nvidia_fast",
+    "nvidia_fast": "nvidia_fast", "nvidia fast": "nvidia_fast",
+    "nvidia_coding": "nvidia_coding", "nvidia coding": "nvidia_coding",
+    "nvidia_technical": "nvidia_technical", "nvidia technical": "nvidia_technical",
+    "nvidia_reasoning": "nvidia_reasoning", "nvidia reasoning": "nvidia_reasoning",
+    "gemini": "gemini", "openrouter": "openrouter", "open router": "openrouter", "or": "openrouter",
 }
-
 AI_MODE_LABELS = {
     "auto": "🔁 Otomatis (Smart Router + fallback)",
     "nvidia_fast": "⚡ NVIDIA Fast",
@@ -496,8 +501,6 @@ AI_MODE_LABELS = {
     "gemini": "👁️ Gemini",
     "openrouter": "🌐 OpenRouter FREE",
 }
-
-# uid(str) -> salah satu key di AI_MODE_LABELS
 user_ai_mode = {}
 
 
@@ -510,26 +513,17 @@ def set_ai_mode(uid, mode):
 
 
 def build_ai_mode_keyboard():
-    """Inline keyboard untuk memilih AI secara manual (tombol)."""
-
     def btn(mode):
-        return {
-            "text": AI_MODE_LABELS[mode],
-            "callback_data": f"aimode:{mode}",
-        }
-
-    return {
-        "inline_keyboard": [
-            [btn("auto")],
-            [btn("nvidia_fast"), btn("nvidia_coding")],
-            [btn("nvidia_technical"), btn("nvidia_reasoning")],
-            [btn("gemini"), btn("openrouter")],
-        ]
-    }
-
+        return {"text": AI_MODE_LABELS[mode], "callback_data": f"aimode:{mode}"}
+    return {"inline_keyboard": [
+        [btn("auto")],
+        [btn("nvidia_fast"), btn("nvidia_coding")],
+        [btn("nvidia_technical"), btn("nvidia_reasoning")],
+        [btn("gemini"), btn("openrouter")],
+    ]}
 
 # ============================================================
-# PERSISTENT MEMORY — SEPARATE GITHUB REPOSITORY
+# GITHUB MEMORY CONFIG
 # ============================================================
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "Dinal7297/designmanufaktur-memory")
@@ -537,81 +531,89 @@ GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
 GITHUB_MEMORY_DIR = "memory"
 GITHUB_API = "https://api.github.com"
 
-# ============================================================
-# UPLOAD HASIL PEKERJAAN — REPO WEBSITE (terpisah dari repo memory)
-# ============================================================
-# Reuse GITHUB_TOKEN yang sama (asal token itu juga punya akses ke
-# repo website). Kalau perlu token berbeda, set WEBSITE_GITHUB_TOKEN
-# di environment variable hosting.
-WEBSITE_GITHUB_TOKEN = os.getenv("WEBSITE_GITHUB_TOKEN", GITHUB_TOKEN)
-WEBSITE_GITHUB_REPO = os.getenv("WEBSITE_GITHUB_REPO", "Dinal7297/Design-Manufaktur-")
-WEBSITE_GITHUB_BRANCH = os.getenv("WEBSITE_GITHUB_BRANCH", "main")
-WEBSITE_DATA_PATH = "data/pekerjaan.json"
-
-# ------------------------------------------------------------
-# BATAS KONTEKS YANG DIKIRIM KE LLM (BARU)
-# ------------------------------------------------------------
-# Terpisah dari MAX_MEMORY (yang tetap dipakai untuk penyimpanan
-# permanent memory di GitHub, TIDAK berubah). Ini hanya mengatur
-# berapa banyak riwayat yang benar-benar dikirim ke provider AI
-# per request, supaya tidak kena limit token/rate dari provider
-# gratis.
-MAX_CONTEXT_TURNS = 8
-MAX_CONTEXT_CHARS_PER_ITEM = 1200
-
-NVIDIA_MAX_CONTEXT_TURNS = 6
-NVIDIA_MAX_CONTEXT_CHARS_PER_ITEM = 800
-
-OPENROUTER_MAX_OUTPUT_TOKENS = 2048
-
 
 def history(uid):
-    return memory.setdefault(uid, [])
+    return memory.setdefault(str(uid), [])
+
+
+def _memory_state(uid):
+    uid = str(uid)
+    return {
+        "user_id": uid,
+        "version": 2,
+        "ai_mode": get_ai_mode(uid),
+        "long_term_memory": long_term_memory.get(uid, []),
+        "history": history(uid)[-MAX_MEMORY:],
+        "conversation_archive": conversation_archive.get(uid, [])[-MAX_ARCHIVE_MESSAGES:],
+        "updated_at": int(time.time()),
+    }
+
+
+def _normalise_memory_fact(text):
+    text = re.sub(r"\\s+", " ", str(text or "")).strip()
+    return text[:MAX_FACT_CHARS]
+
+
+def _add_long_term_fact(uid, fact, category="general"):
+    uid = str(uid)
+    fact = _normalise_memory_fact(fact)
+    if not fact or len(fact) < 4:
+        return False
+    facts = long_term_memory.setdefault(uid, [])
+    key = fact.lower()
+    for item in facts:
+        if str(item.get("fact", "")).lower() == key:
+            item["updated_at"] = int(time.time())
+            return False
+    facts.append({"fact": fact, "category": category, "updated_at": int(time.time())})
+    long_term_memory[uid] = facts[-MAX_MEMORY_FACTS:]
+    return True
+
+
+def _extract_long_term_memory(uid, role, content):
+    """Ekstraksi lokal tanpa API tambahan. Menyimpan pernyataan yang jelas
+    sebagai memori jangka panjang; semua pesan tetap masuk archive."""
+    if role != "user":
+        return
+    text = re.sub(r"\\s+", " ", str(content or "")).strip()
+    if not text:
+        return
+    low = text.lower()
+    patterns = [
+        (r"\\b(?:nama saya|saya bernama|nama usaha saya|usaha saya bernama)\\s+(.{2,200})", "identitas/usaha"),
+        (r"\\b(?:saya ingin|saya mau|tujuan saya|target saya|proyek saya)\\s+(.{5,300})", "tujuan/proyek"),
+        (r"\\b(?:ingat|ingatlah|tolong ingat|jangan lupa|catat|simpan)\\s*[:,-]?\\s*(.{5,400})", "instruksi/pengingat"),
+        (r"\\b(?:preferensi saya|saya lebih suka|saya suka|saya tidak suka)\\s+(.{5,300})", "preferensi"),
+        (r"\\b(?:gunakan|pakai|selalu gunakan|mulai sekarang)\\s+(.{5,300})", "preferensi kerja"),
+    ]
+    for pattern, category in patterns:
+        for match in re.finditer(pattern, text, flags=re.I):
+            fact = match.group(0).strip()
+            _add_long_term_fact(uid, fact, category)
+    # Kalimat eksplisit yang biasanya memang dimaksudkan untuk disimpan.
+    if any(x in low for x in ("simpan ini", "simpan sebagai memori", "ingat ini", "jadikan memori")):
+        _add_long_term_fact(uid, text, "explicit")
 
 
 def remember(uid, role, content):
-
-    history(uid).append({
-        "role": role,
-        "content": content,
-    })
-
+    uid = str(uid)
+    item = {"role": role, "content": str(content or ""), "timestamp": int(time.time())}
+    history(uid).append(item)
     memory[uid] = history(uid)[-MAX_MEMORY:]
+    conversation_archive.setdefault(uid, []).append(item)
+    conversation_archive[uid] = conversation_archive[uid][-MAX_ARCHIVE_MESSAGES:]
+    _extract_long_term_memory(uid, role, content)
 
 
-def _trim_history_for_context(
-    uid,
-    max_turns=MAX_CONTEXT_TURNS,
-    max_chars_per_item=MAX_CONTEXT_CHARS_PER_ITEM,
-):
-    """
-    Ambil riwayat terbaru saja (max_turns item terakhir),
-    dan potong setiap item yang terlalu panjang.
-    Tujuan: hemat token supaya tidak kena limit provider gratis.
-    Tidak mengubah data yang tersimpan di memory[] / GitHub,
-    hanya mempengaruhi apa yang dikirim ke LLM saat itu.
-    """
-
-    items = history(uid)[-max_turns:]
-
+def _trim_history_for_context(uid, max_turns=MAX_CONTEXT_TURNS,
+                              max_chars_per_item=MAX_CONTEXT_CHARS_PER_ITEM):
+    items = history(str(uid))[-max_turns:]
     trimmed = []
-
     for m in items:
-
         content = m.get("content", "") or ""
-
         if len(content) > max_chars_per_item:
-
-            content = (
-                content[:max_chars_per_item]
-                + "\n...(riwayat dipotong untuk hemat token)"
-            )
-
-        trimmed.append({
-            "role": m.get("role", "user"),
-            "content": content,
-        })
-
+            content = content[:max_chars_per_item] + "\n...(dipotong untuk hemat token)"
+        trimmed.append({"role": m.get("role", "user"), "content": content})
     return trimmed
 
 
@@ -619,63 +621,101 @@ def _memory_path(uid):
     return f"{GITHUB_MEMORY_DIR}/{str(uid)}.json"
 
 
-async def load_persistent_memory(uid):
+def _memory_lock(uid):
     uid = str(uid)
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        memory.setdefault(uid, [])
+    if uid not in memory_locks:
+        memory_locks[uid] = asyncio.Lock()
+    return memory_locks[uid]
+
+
+async def load_persistent_memory(uid, force=False):
+    uid = str(uid)
+    if uid in loaded_memory_users and not force:
         return
-    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
-    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
-        if response.status_code == 404:
-            memory[uid] = []
+    async with _memory_lock(uid):
+        if uid in loaded_memory_users and not force:
             return
-        response.raise_for_status()
-        encoded = response.json().get("content", "")
-        if not encoded:
-            memory[uid] = []
-            return
-        raw = base64.b64decode(encoded.replace("\n", "")).decode("utf-8")
-        saved = json.loads(raw)
-        if isinstance(saved, dict):
-            saved_mode = saved.get("ai_mode")
-            if saved_mode in AI_MODE_LABELS:
-                user_ai_mode[uid] = saved_mode
-            saved = saved.get("memory", [])
-        if not isinstance(saved, list):
-            saved = []
-        memory[uid] = saved[-MAX_MEMORY:]
-        log.info("PERSISTENT MEMORY LOAD OK | uid=%s | items=%s", uid, len(memory[uid]))
-    except Exception as e:
-        log.warning("PERSISTENT MEMORY LOAD FAILED | uid=%s | %s", uid, str(e)[:300])
         memory.setdefault(uid, [])
+        long_term_memory.setdefault(uid, [])
+        conversation_archive.setdefault(uid, [])
+        if not GITHUB_TOKEN or not GITHUB_REPO:
+            loaded_memory_users.add(uid)
+            log.warning("MEMORY LOCAL ONLY | GITHUB_TOKEN/GITHUB_REPO belum tersedia")
+            return
+        url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
+        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
+            if response.status_code == 404:
+                loaded_memory_users.add(uid)
+                return
+            response.raise_for_status()
+            encoded = response.json().get("content", "")
+            raw = base64.b64decode(encoded.replace("\n", "")).decode("utf-8") if encoded else "{}"
+            saved = json.loads(raw)
+            if isinstance(saved, dict):
+                saved_mode = saved.get("ai_mode")
+                if saved_mode in AI_MODE_LABELS:
+                    user_ai_mode[uid] = saved_mode
+                lt = saved.get("long_term_memory", [])
+                hist = saved.get("history", saved.get("memory", []))
+                archive = saved.get("conversation_archive", hist)
+            else:
+                lt, hist, archive = [], saved, saved
+            long_term_memory[uid] = lt if isinstance(lt, list) else []
+            memory[uid] = hist[-MAX_MEMORY:] if isinstance(hist, list) else []
+            conversation_archive[uid] = archive[-MAX_ARCHIVE_MESSAGES:] if isinstance(archive, list) else []
+            loaded_memory_users.add(uid)
+            log.info("PERSISTENT MEMORY LOAD OK | uid=%s | history=%s | facts=%s | archive=%s", uid, len(memory[uid]), len(long_term_memory[uid]), len(conversation_archive[uid]))
+        except Exception as e:
+            log.warning("PERSISTENT MEMORY LOAD FAILED | uid=%s | %s", uid, str(e)[:300])
+            # Jangan menimpa memori yang mungkin sudah ada di RAM.
+            loaded_memory_users.add(uid)
 
 
 async def save_persistent_memory(uid):
     uid = str(uid)
     if not GITHUB_TOKEN or not GITHUB_REPO:
         log.warning("PERSISTENT MEMORY SAVE SKIPPED | GITHUB_TOKEN/GITHUB_REPO belum tersedia")
-        return
-    raw = json.dumps({"user_id": uid, "memory": history(uid)[-MAX_MEMORY:], "ai_mode": get_ai_mode(uid), "updated_at": int(time.time())}, ensure_ascii=False, indent=2)
-    encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
-    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
-    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            current = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
-            body = {"message": f"memory: update {uid}", "content": encoded, "branch": GITHUB_BRANCH}
-            if current.status_code == 200:
-                body["sha"] = current.json().get("sha")
-            elif current.status_code != 404:
-                current.raise_for_status()
-            saved = await client.put(url, headers=headers, json=body)
-        if saved.status_code not in (200, 201):
-            saved.raise_for_status()
-        log.info("PERSISTENT MEMORY SAVE OK | uid=%s", uid)
-    except Exception as e:
-        log.warning("PERSISTENT MEMORY SAVE FAILED | uid=%s | %s", uid, str(e)[:300])
+        return False
+    async with _memory_lock(uid):
+        raw = json.dumps(_memory_state(uid), ensure_ascii=False, indent=2)
+        encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
+        url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
+        headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                current = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
+                body = {"message": f"memory: update {uid}", "content": encoded, "branch": GITHUB_BRANCH}
+                if current.status_code == 200:
+                    body["sha"] = current.json().get("sha")
+                elif current.status_code != 404:
+                    current.raise_for_status()
+                saved = await client.put(url, headers=headers, json=body)
+            if saved.status_code not in (200, 201):
+                saved.raise_for_status()
+            loaded_memory_users.add(uid)
+            log.info("PERSISTENT MEMORY SAVE OK | uid=%s", uid)
+            return True
+        except Exception as e:
+            log.warning("PERSISTENT MEMORY SAVE FAILED | uid=%s | %s", uid, str(e)[:300])
+            return False
+
+
+async def clear_session_memory(uid):
+    uid = str(uid)
+    memory[uid] = []
+    # Archive dan long-term memory sengaja TIDAK dihapus.
+    await save_persistent_memory(uid)
+
+
+async def clear_all_memory(uid):
+    uid = str(uid)
+    memory[uid] = []
+    long_term_memory[uid] = []
+    conversation_archive[uid] = []
+    await save_persistent_memory(uid)
 
 
 # ============================================================
@@ -843,121 +883,45 @@ async def upload_pekerjaan_from_photo(photo_bytes, category_raw, location_raw):
     return entry
 
 
-def build_messages(
-    uid,
-    text,
-    task,
-    max_turns=MAX_CONTEXT_TURNS,
-    max_chars_per_item=MAX_CONTEXT_CHARS_PER_ITEM,
-):
-
+def build_messages(uid, text, task, max_turns=MAX_CONTEXT_TURNS,
+                    max_chars_per_item=MAX_CONTEXT_CHARS_PER_ITEM):
     task_hint = {
-
-        "coding": """
-TUGAS CODING.
-
-Prioritaskan:
-- kode yang dapat dijalankan
-- ketepatan sintaks
-- debugging
-- struktur program
-- solusi praktis
-""",
-
-        "reasoning": """
-TUGAS REASONING.
-
-Analisis masalah secara sistematis.
-Periksa kemungkinan penyebab.
-Validasi kesimpulan sebelum menjawab.
-""",
-
-        "technical": """
-TUGAS TEKNIK/MANUFAKTUR.
-
-Prioritaskan:
-- ukuran
-- material
-- rangka
-- fabrikasi
-- cutting list
-- jumlah batang
-- sambungan
-- efisiensi material
-- asumsi teknik
-- pekerjaan sipil
-
-Untuk cutting list:
-WAJIB validasi seluruh angka sebelum menjawab.
-""",
-
-        "civil": """
-TUGAS CIVIL CALCULATOR.
-
-Prioritaskan:
-- volume
-- dimensi
-- kebutuhan material
-- semen
-- pasir
-- kerikil
-- air
-- besi
-- berat besi
-- pondasi
-- dinding
-- plester
-- acian
-- galian
-- urugan
-
-Jika data tidak diberikan:
-jangan mengarang.
-
-Untuk struktur:
-hasil adalah estimasi awal,
-bukan pengganti desain engineer.
-""",
-
-        "math": """
-TUGAS MATEMATIKA.
-
-Hitung dengan teliti.
-Tampilkan rumus penting.
-Gunakan satuan.
-Periksa kembali hasil.
-""",
-
-        "creative": """
-TUGAS KREATIF.
-
-Buat hasil yang siap digunakan,
-praktis, menarik, dan sesuai tujuan.
-""",
-
-        "general": """
-TUGAS UMUM.
-
-Jawab langsung, jelas, dan berguna.
-""",
-
+        "coding": "TUGAS CODING. Prioritaskan kode yang dapat dijalankan, ketepatan sintaks, debugging, struktur program, dan solusi praktis.",
+        "reasoning": "TUGAS REASONING. Analisis masalah secara sistematis dan validasi kesimpulan.",
+        "technical": "TUGAS TEKNIK/MANUFAKTUR. Prioritaskan ukuran, material, rangka, fabrikasi, cutting list, sambungan, efisiensi material, asumsi teknik, dan pekerjaan sipil.",
+        "civil": "TUGAS CIVIL CALCULATOR. Prioritaskan volume, dimensi, kebutuhan material, besi, pondasi, dinding, plester, acian, galian, dan urugan. Jangan mengarang data.",
+        "math": "TUGAS MATEMATIKA. Hitung dengan teliti, tampilkan rumus penting, satuan, dan periksa hasil.",
+        "creative": "TUGAS KREATIF. Buat hasil yang siap digunakan, praktis, menarik, dan sesuai tujuan.",
+        "general": "TUGAS UMUM. Jawab langsung, jelas, dan berguna.",
     }.get(task, "")
 
-    return [
-        {
-            "role": "system",
-            "content": SYSTEM + "\n\n" + task_hint,
-        }
-    ] + _trim_history_for_context(
-        uid,
-        max_turns,
-        max_chars_per_item,
-    ) + [
-        {
-            "role": "user",
-            "content": text,
-        }
-    ]
+    uid = str(uid)
+    facts = long_term_memory.get(uid, [])
+    memory_text = "Belum ada memori jangka panjang tersimpan."
+    if facts:
+        memory_lines = []
+        for item in facts[-MAX_MEMORY_FACTS:]:
+            fact = item.get("fact", "") if isinstance(item, dict) else str(item)
+            category = item.get("category", "general") if isinstance(item, dict) else "general"
+            if fact:
+                memory_lines.append(f"• [{category}] {fact}")
+        memory_text = "\n".join(memory_lines)
+
+    system = SYSTEM + "\n\n" + task_hint + """
+
+============================================================
+MEMORI JANGKA PANJANG PENGGUNA
+============================================================
+Gunakan memori di bawah ini sebagai konteks yang sudah diketahui.
+Jangan menyebutkan memori kecuali relevan dengan pertanyaan.
+Jika memori bertentangan dengan pesan terbaru pengguna, prioritaskan
+pesan terbaru dan jangan mengarang.
+
+""" + memory_text
+
+    return [{"role": "system", "content": system}] + _trim_history_for_context(
+        uid, max_turns, max_chars_per_item
+    ) + [{"role": "user", "content": text}]
 
 
 # ============================================================
@@ -2358,21 +2322,10 @@ jangan menyatakan aman tanpa perhitungan engineering.
 
     }.get(task, "")
 
-    prompt = (
-        SYSTEM
-        + "\n\n"
-        + task_hint
-        + "\n\n"
+    messages = build_messages(uid, text, task)
+    prompt = "\n\n".join(
+        f"{m['role']}: {m['content']}" for m in messages
     )
-
-    for m in _trim_history_for_context(uid):
-
-        prompt += (
-            f"{m['role']}: "
-            f"{m['content']}\n"
-        )
-
-    prompt += f"user: {text}"
 
     r = gemini.models.generate_content(
         model=GEMINI_CHAT_MODEL,
@@ -3913,6 +3866,9 @@ async def handle(update):
         .get("id", chat_id)
     )
 
+    # MEMORI OTOMATIS: selalu pulihkan dari GitHub sebelum memproses update.
+    await load_persistent_memory(uid)
+
     text = (
         message.get(
             "text",
@@ -4010,7 +3966,8 @@ Perintah:
 
 /model
 /ai
-/reset
+/reset          = hapus sesi, memori permanen tetap ada
+/forget_memory  = hapus SEMUA memori permanen
 /gambar <prompt>
 
 📸 UPLOAD HASIL PEKERJAAN KE WEBSITE
@@ -4029,23 +3986,16 @@ hasil material bukan pengganti desain engineer.
     # RESET
     # ========================================================
 
-    if text.startswith(
-        "/reset"
-    ):
+    if text.startswith("/reset"):
+        await load_persistent_memory(uid)
+        await clear_session_memory(uid)
+        await send_text(chat_id, "✅ Riwayat sesi aktif dihapus. 🧠 Memori permanen tetap tersimpan di GitHub.")
+        return
 
-        memory.pop(
-            uid,
-            None
-        )
-
-        memory[uid] = []
-        await save_persistent_memory(uid)
-
-        await send_text(
-            chat_id,
-            "✅ Memory sesi dihapus.",
-        )
-
+    if text.startswith("/forget_memory") or text.startswith("/hapus_memori"):
+        await load_persistent_memory(uid)
+        await clear_all_memory(uid)
+        await send_text(chat_id, "🗑️ Semua memori permanen, riwayat sesi, dan arsip percakapan user ini sudah dihapus dari data bot dan diperbarui di GitHub.")
         return
 
     # ========================================================
