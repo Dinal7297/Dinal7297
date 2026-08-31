@@ -2189,14 +2189,38 @@ def classify_task(text):
         "copywriting",
     ]
 
+    # Hanya tandai task teknis/civil jika pesan memang meminta pekerjaan teknis.
+    # Kata umum seperti "bengkel", "besi", "ukuran", atau "material" saja
+    # tidak cukup untuk mengubah percakapan biasa menjadi TECHNICAL.
+    explicit_calc = [
+        "hitung", "perhitungan", "berapa", "rumus", "kalkulator",
+        "estimasi kebutuhan", "kebutuhan material", "cutting list",
+        "cuttinglist", "volume", "luas", "berat", "beban",
+        "jumlah batang", "jumlah besi", "dimensi", "ukuran ",
+    ]
+    explicit_technical = [
+        "desain rangka", "analisa rangka", "analisis rangka",
+        "cek struktur", "validasi struktur", "sambungan",
+        "fabrikasi", "cutting list", "potongan batang",
+        "profil hollow", "profil pipa", "baja ringan",
+    ]
+
     if any(x in t for x in coding):
         return "coding"
 
     if any(x in t for x in civil):
-        return "civil"
+        if any(x in t for x in explicit_calc) or any(x in t for x in (
+            "pondasi", "footplat", "sloof", "kolom", "balok", "plat beton",
+            "beton", "coran", "tulangan", "plester", "acian", "galian",
+        )):
+            return "civil"
 
-    if any(x in t for x in technical):
-        return "technical"
+    if any(x in t for x in explicit_calc) or any(x in t for x in explicit_technical):
+        if any(x in t for x in technical):
+            return "technical"
+
+    if any(x in t for x in reasoning):
+        return "reasoning"
 
     if any(x in t for x in reasoning):
         return "reasoning"
@@ -4266,8 +4290,11 @@ Jangan mengarang ukuran yang tidak terlihat.
             chat_router, uid, text, ai_mode, chat_mode == CHAT_MODE_AGENT, forced_task
         )
 
-        remember(uid, "user", text)
-        remember(uid, "assistant", answer)
+        # FAST benar-benar tanpa memory: jangan membaca maupun menulis
+        # memory percakapan. AGENT baru mempertahankan konteks dan menyimpan permanen.
+        if chat_mode == CHAT_MODE_AGENT:
+            remember(uid, "user", text)
+            remember(uid, "assistant", answer)
 
         # SATU pesan saja: jawaban + transparansi. Ini mencegah tampilan
         # terasa seperti bot menjawab dua kali dan mengurangi 1 API call Telegram.
