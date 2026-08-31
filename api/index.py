@@ -11,7 +11,7 @@ import json
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from google import genai
 from google.genai import types
 from openai import OpenAI
@@ -4125,7 +4125,6 @@ async def handle(update):
 
         # /start perlu memulihkan setting mode; memory hanya dipakai jika Agent.
         await load_persistent_memory(uid)
-        await set_bot_commands()
         current_chat_mode = get_chat_mode(uid)
         mode_line = CHAT_MODE_LABELS.get(current_chat_mode, CHAT_MODE_LABELS[CHAT_MODE_FAST])
         await send_text(
@@ -4892,8 +4891,8 @@ async def api_root():
 
 async def webhook_impl(
     request: Request,
-    x_telegram_bot_api_secret_token:
-        Optional[str],
+    x_telegram_bot_api_secret_token: Optional[str],
+    background_tasks: BackgroundTasks,
 ):
 
     if (
@@ -4910,17 +4909,43 @@ async def webhook_impl(
 
     update = await request.json()
 
+    # PENTING UNTUK VERCEL: jangan menunggu AI/GitHub di dalam webhook.
+    # Telegram harus segera menerima HTTP 200 agar tidak mengirim ulang
+    # update yang sama karena timeout. Duplicate ditahan di instance ini,
+    # sedangkan response webhook dikembalikan SEBELUM proses AI dimulai.
     update_id = update.get("update_id")
     if not await claim_telegram_update(update_id):
         log.info("DUPLICATE UPDATE IGNORED | update_id=%s", update_id)
         return {"ok": True, "duplicate": True}
 
-    try:
-        await handle(update)
-    except Exception:
-        await release_telegram_update(update_id)
-        log.exception("WEBHOOK HANDLE FAILED | update_id=%s", update_id)
-        raise
+    async def process_update_safely():
+        try:
+            await handle(update)
+        except Exception:
+            log.exception("BACKGROUND UPDATE FAILED | update_id=%s", update_id)
+            # Jangan release claim setelah response 200. Jika dilepas,
+            # Telegram retry atau request ganda dapat diproses lagi.
+            # Jika proses gagal, kirim pesan error bila memungkinkan.
+            try:
+                msg = update.get("message") or {}
+                cq = update.get("callback_query") or {}
+                chat_id = (
+                    msg.get("chat", {}).get("id")
+                    or cq.get("message", {}).get("chat", {}).get("id")
+                )
+                if chat_id:
+                    await send_text(
+                        chat_id,
+                        "⚠️ Proses gagal sementara. Silakan kirim ulang pesan Anda satu kali."
+                    )
+            except Exception:
+                log.exception("FAILED TO SEND BACKGROUND ERROR | update_id=%s", update_id)
+
+    # BackgroundTasks dijalankan setelah FastAPI mengirim HTTP 200.
+    # Ini mencegah Telegram menunggu proses AI yang dapat memakan waktu lama.
+    # Jika runtime tidak mendukung background execution, endpoint tetap
+    # mengembalikan 200 dan tidak akan memicu retry webhook.
+    background_tasks.add_task(process_update_safely)
 
     return {
         "ok": True
@@ -4936,15 +4961,14 @@ async def webhook_impl(
 )
 async def webhook(
     request: Request,
-    x_telegram_bot_api_secret_token:
-        Optional[str] = Header(
-            default=None
-        ),
+    background_tasks: BackgroundTasks,
+    x_telegram_bot_api_secret_token: Optional[str] = Header(default=None),
 ):
 
     return await webhook_impl(
         request,
         x_telegram_bot_api_secret_token,
+        background_tasks,
     )
 
 
@@ -4955,13 +4979,12 @@ async def webhook(
 @app.post("/")
 async def root_post(
     request: Request,
-    x_telegram_bot_api_secret_token:
-        Optional[str] = Header(
-            default=None
-        ),
+    background_tasks: BackgroundTasks,
+    x_telegram_bot_api_secret_token: Optional[str] = Header(default=None),
 ):
 
     return await webhook_impl(
         request,
         x_telegram_bot_api_secret_token,
+        background_tasks,
     )
