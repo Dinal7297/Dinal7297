@@ -20,6 +20,10 @@ from openai import OpenAI
 # ============================================================
 # APP
 # ============================================================
+# MODE FAST/AGENT FIX v5
+# - send_text() now supports inline reply_markup.
+# - This fixes /start, /mode, and FAST/AGENT buttons.
+# ============================================================
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("designmanufaktur")
@@ -3073,7 +3077,8 @@ def split_telegram_message(
 
 async def send_text(
     chat_id,
-    text
+    text,
+    reply_markup=None
 ):
 
     formatted = clean_telegram_text(
@@ -3092,6 +3097,7 @@ async def send_text(
             {
                 "chat_id": chat_id,
                 "text": chunk,
+                **({"reply_markup": reply_markup} if reply_markup else {}),
             },
         )
 
