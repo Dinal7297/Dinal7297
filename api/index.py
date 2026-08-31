@@ -439,6 +439,13 @@ JANGAN PERNAH menampilkan:
 # AI CLIENTS
 # ============================================================
 
+# Timeout eksplisit per-provider (detik). Sebelumnya Groq & OpenRouter
+# tidak diberi timeout sama sekali sehingga bisa hang lama mengikuti
+# default SDK OpenAI (ratusan detik) -> ini penyebab response kadang
+# >100 detik. NVIDIA sudah punya timeout=8.0 sejak awal.
+GROQ_TIMEOUT_SECONDS = float(os.getenv("GROQ_TIMEOUT_SECONDS", "12"))
+OPENROUTER_TIMEOUT_SECONDS = float(os.getenv("OPENROUTER_TIMEOUT_SECONDS", "12"))
+
 gemini = (
     genai.Client(api_key=GEMINI_KEY)
     if GEMINI_KEY
@@ -449,6 +456,8 @@ openrouter = (
     OpenAI(
         api_key=OPENROUTER_KEY,
         base_url="https://openrouter.ai/api/v1",
+        timeout=OPENROUTER_TIMEOUT_SECONDS,
+        max_retries=0,
     )
     if OPENROUTER_KEY
     else None
@@ -458,6 +467,8 @@ groq = (
     OpenAI(
         api_key=GROQ_KEY,
         base_url="https://api.groq.com/openai/v1",
+        timeout=GROQ_TIMEOUT_SECONDS,
+        max_retries=0,
     )
     if GROQ_KEY
     else None
@@ -481,6 +492,19 @@ nvidia = (
 
 memory = {}
 MAX_MEMORY = 200
+
+# ============================================================
+# GEMINI PRIMARY + 24H COOLDOWN
+# ============================================================
+# Gemini menjadi provider utama untuk AUTO chat. Jika Gemini mengalami
+# timeout atau quota/rate-limit habis, Gemini dinonaktifkan 24 jam dan
+# router langsung pindah ke provider gratis berikutnya. Status cooldown
+# disimpan di GitHub agar tidak hilang ketika instance Vercel restart.
+GEMINI_COOLDOWN_SECONDS = 24 * 60 * 60
+GEMINI_HEALTH_PATH = "system/gemini_health.json"
+_gemini_cooldown_until = 0.0
+_gemini_health_loaded = False
+
 
 # Persistent GitHub memory is intentionally larger than the LLM context.
 # The model only receives a small recent window, while AGENT can reload
@@ -529,6 +553,88 @@ GROQ_MAX_CONTEXT_CHARS_PER_ITEM = 400
 GROQ_MAX_OUTPUT_TOKENS = 1536
 
 OPENROUTER_MAX_OUTPUT_TOKENS = 2048
+
+
+def _gemini_health_url():
+    return f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{GEMINI_HEALTH_PATH}"
+
+
+def _github_headers():
+    return {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def _load_gemini_health_once():
+    global _gemini_health_loaded, _gemini_cooldown_until
+    if _gemini_health_loaded:
+        return
+    _gemini_health_loaded = True
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return
+    try:
+        with httpx.Client(timeout=5) as client:
+            r = client.get(_gemini_health_url(), headers=_github_headers(), params={"ref": GITHUB_BRANCH})
+        if r.status_code == 404:
+            return
+        r.raise_for_status()
+        payload = r.json()
+        encoded = payload.get("content", "")
+        if encoded:
+            data = json.loads(base64.b64decode(encoded.replace("\n", "")).decode("utf-8"))
+            _gemini_cooldown_until = float(data.get("disabled_until", 0) or 0)
+    except Exception:
+        log.warning("GEMINI HEALTH LOAD FAILED; using local health state", exc_info=True)
+
+
+def _gemini_disabled():
+    _load_gemini_health_once()
+    return time.time() < _gemini_cooldown_until
+
+
+def _save_gemini_cooldown(reason):
+    global _gemini_cooldown_until
+    _gemini_cooldown_until = time.time() + GEMINI_COOLDOWN_SECONDS
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        return
+    try:
+        url = _gemini_health_url()
+        with httpx.Client(timeout=5) as client:
+            current = client.get(url, headers=_github_headers(), params={"ref": GITHUB_BRANCH})
+            sha = None
+            if current.status_code == 200:
+                body = current.json()
+                sha = body.get("sha")
+            elif current.status_code != 404:
+                current.raise_for_status()
+            raw = json.dumps({
+                "provider": "gemini",
+                "disabled_until": int(_gemini_cooldown_until),
+                "reason": reason,
+                "updated_at": int(time.time()),
+            }, ensure_ascii=False, indent=2)
+            body = {
+                "message": "health: Gemini cooldown 24h",
+                "content": base64.b64encode(raw.encode()).decode("ascii"),
+                "branch": GITHUB_BRANCH,
+            }
+            if sha:
+                body["sha"] = sha
+            saved = client.put(url, headers=_github_headers(), json=body)
+            saved.raise_for_status()
+    except Exception:
+        log.warning("GEMINI HEALTH SAVE FAILED; cooldown remains local", exc_info=True)
+
+
+def _gemini_mark_failure(exc):
+    reason = _transparent_error_reason(exc)
+    # Habis quota/rate-limit atau timeout = cooldown 24 jam.
+    if reason in {"TIMEOUT", "RATE LIMIT/QUOTA"}:
+        _save_gemini_cooldown(reason)
+        return True
+    return False
 
 
 def history(uid):
@@ -974,6 +1080,8 @@ TUGAS KREATIF.
 Buat hasil yang siap digunakan,
 praktis, menarik, dan sesuai tujuan.
 """,
+
+        "memory": "Pertanyaan tentang memory/proyek tersimpan. Gunakan memory yang diberikan dan jangan mengarang data.",
 
         "general": """
 TUGAS UMUM.
@@ -2357,97 +2465,51 @@ def call_openrouter(uid, text, task, model=None):
 # ============================================================
 
 def call_gemini(uid, text, task):
+    """Gemini PRIMARY: satu percobaan saja. Jika gagal, router eksternal fallback.
+    Ini sengaja tidak mencoba model Gemini kedua agar aturan cooldown 24 jam
+    benar-benar berlaku ketika Gemini primary timeout/quota habis.
+    """
     if not GEMINI_KEY:
         raise RuntimeError("GEMINI_API_KEY belum tersedia.")
 
     task_hint = {
-
-        "coding":
-            "Berikan kode yang dapat dijalankan.",
-
-        "reasoning":
-            "Analisis masalah secara teliti sebelum kesimpulan.",
-
-        "technical":
-            "Gunakan pertimbangan teknik dan manufaktur yang praktis.",
-
-        "civil":
-            """
-Gunakan perhitungan sipil secara teliti.
-
-Jangan mengarang data.
-Jika data belum diberikan, nyatakan data belum ditentukan.
-
-Bedakan:
-estimasi material
-dengan
-desain struktur.
-
-Untuk struktur:
-jangan menyatakan aman tanpa perhitungan engineering.
-""",
-
-        "math":
-            "Hitung secara teliti dan tunjukkan asumsi.",
-
-        "creative":
-            "Buat hasil kreatif yang siap digunakan.",
-
-        "general":
-            "Jawab langsung dan jelas.",
-
+        "coding": "Berikan kode yang dapat dijalankan.",
+        "reasoning": "Analisis masalah secara teliti sebelum kesimpulan.",
+        "technical": "Gunakan pertimbangan teknik dan manufaktur yang praktis.",
+        "civil": "Gunakan perhitungan sipil secara teliti. Jangan mengarang data. Jika data belum diberikan, nyatakan data belum ditentukan. Bedakan estimasi material dengan desain struktur.",
+        "math": "Hitung secara teliti dan tunjukkan asumsi.",
+        "creative": "Buat hasil kreatif yang siap digunakan.",
+        "memory": "Gunakan memory/proyek yang tersedia dan jangan mengarang data yang tidak tersimpan.",
+        "general": "Jawab langsung dan jelas.",
     }.get(task, "")
 
-    prompt = (
-        SYSTEM
-        + "\n\n"
-        + task_hint
-        + "\n\n"
-    )
-
+    prompt = SYSTEM + "\n\n" + task_hint + "\n\n"
     for m in _trim_history_for_context(uid):
-
-        prompt += (
-            f"{m['role']}: "
-            f"{m['content']}\n"
-        )
-
+        prompt += f"{m['role']}: {m['content']}\n"
     prompt += f"user: {text}"
 
-    models = list(dict.fromkeys([
-        GEMINI_CHAT_MODEL,
-        "gemini-3.6-flash",
-        "gemini-3.5-flash-lite",
-    ]))
-    last_error = None
-    for selected_model in models:
-        try:
-            payload = {
-                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                "generationConfig": {"maxOutputTokens": 2048},
-            }
-            with httpx.Client(timeout=15.0) as client:
-                resp = client.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent",
-                    params={"key": GEMINI_KEY},
-                    json=payload,
-                )
-            if resp.status_code >= 400:
-                raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:300]}")
-            data = resp.json()
-            candidates = data.get("candidates") or []
-            answer = ""
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                answer = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
-            if not answer.strip():
-                raise RuntimeError("Gemini mengembalikan jawaban kosong.")
-            return answer, selected_model
-        except Exception as e:
-            last_error = e
-            continue
-
-    raise RuntimeError(f"Gemini gagal: {last_error}")
+    selected_model = GEMINI_CHAT_MODEL or "gemini-3.6-flash"
+    payload = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": 2048},
+    }
+    with httpx.Client(timeout=12.0) as client:
+        resp = client.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent",
+            params={"key": GEMINI_KEY},
+            json=payload,
+        )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    candidates = data.get("candidates") or []
+    answer = ""
+    if candidates:
+        parts = candidates[0].get("content", {}).get("parts", [])
+        answer = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+    if not answer.strip():
+        raise RuntimeError("Gemini mengembalikan jawaban kosong.")
+    return answer, selected_model
 
 
 # ============================================================
@@ -2660,20 +2722,28 @@ def _provider_label(name):
 
 
 def _auto_provider_order(task):
-    # Capability-based order. Do not send every task through the same queue.
-    orders = {
-        "video": ["gemini"],
-        "image": ["gemini"],
-        "coding": ["nvidia", "groq", "gemini", "openrouter"],
-        "reasoning": ["nvidia", "gemini", "groq", "openrouter"],
-        "math": ["nvidia", "groq", "gemini", "openrouter"],
-        "technical": ["nvidia", "gemini", "groq", "openrouter"],
-        "civil": ["nvidia", "gemini", "groq", "openrouter"],
-        "memory": ["nvidia", "gemini", "groq", "openrouter"],
-        "creative": ["gemini", "nvidia", "groq", "openrouter"],
-        "general": ["nvidia", "groq", "gemini", "openrouter"],
+    # Gemini adalah PRIMARY untuk AUTO. Jika Gemini sedang cooldown 24 jam
+    # (atau baru saja gagal di request ini), langsung dilewati tanpa
+    # menunggu timeout, dan NVIDIA menjadi provider berikutnya yang dicoba
+    # (sesuai permintaan: Gemini cooldown -> alihkan ke NVIDIA dahulu).
+    # NVIDIA sudah punya timeout pendek (8 detik) jadi aman ditaruh di depan;
+    # Groq & OpenRouter sekarang juga punya timeout eksplisit (lihat
+    # GROQ_TIMEOUT_SECONDS / OPENROUTER_TIMEOUT_SECONDS) sehingga fallback
+    # tetap cepat walau NVIDIA ikut gagal.
+    others = {
+        "video": ["nvidia", "groq", "openrouter"],
+        "image": ["nvidia", "groq", "openrouter"],
+        "coding": ["nvidia", "groq", "openrouter"],
+        "reasoning": ["nvidia", "groq", "openrouter"],
+        "math": ["nvidia", "groq", "openrouter"],
+        "technical": ["nvidia", "groq", "openrouter"],
+        "civil": ["nvidia", "groq", "openrouter"],
+        "memory": ["nvidia", "groq", "openrouter"],
+        "creative": ["nvidia", "groq", "openrouter"],
+        "general": ["nvidia", "groq", "openrouter"],
     }
-    return orders.get(task, orders["general"])
+    order = [] if _gemini_disabled() else ["gemini"]
+    return order + others.get(task, others["general"])
 
 
 MANUAL_AI_MODES = {
@@ -2744,7 +2814,10 @@ def chat_router(uid, text):
         else:
             provider, model, effort, _label = cfg
             fallback = _auto_provider_order(task)
-            routes = [(provider, model, effort)] + [(p, None, None) for p in fallback if p != provider]
+            if provider == "gemini" and _gemini_disabled():
+                routes = [(p, None, None) for p in fallback if p != "gemini"]
+            else:
+                routes = [(provider, model, effort)] + [(p, None, None) for p in fallback if p != provider]
 
     attempts = []
     for provider_name, selected_model, effort in routes:
@@ -2783,11 +2856,14 @@ def chat_router(uid, text):
             }
             return answer, meta
         except Exception as e:
+            reason = _transparent_error_reason(e)
+            if provider_name == "gemini":
+                _gemini_mark_failure(e)
             attempts.append({
                 "provider": provider_name,
                 "model": selected_model,
                 "status": "FAILED",
-                "reason": _transparent_error_reason(e),
+                "reason": reason,
             })
 
     elapsed = time.perf_counter() - started
@@ -3952,610 +4028,4 @@ hasil material bukan pengganti desain engineer.
 
         memory[uid] = []
         if user_conversation_mode.get(uid, "fast") == "agent":
-            await save_persistent_memory(uid)
-
-        await send_text(
-            chat_id,
-            "✅ Memory sesi dihapus.",
-        )
-
-        return
-
-    # ========================================================
-    # MODEL
-    # ========================================================
-
-    if text.startswith(
-        "/model"
-    ):
-
-        current_mode = user_ai_mode.get(str(uid), "auto")
-        keyboard = {
-            "inline_keyboard": [
-                [{"text": "🔄 AUTO", "callback_data": "ai_auto"}],
-                [{"text": "🟢 NVIDIA Fast", "callback_data": "ai_nvidia_fast"}, {"text": "💻 NVIDIA Coding", "callback_data": "ai_nvidia_coding"}],
-                [{"text": "🔧 NVIDIA Technical", "callback_data": "ai_nvidia_technical"}, {"text": "🧠 NVIDIA Reasoning", "callback_data": "ai_nvidia_reasoning"}],
-                [{"text": "⚡ Groq Fast", "callback_data": "ai_groq_fast"}, {"text": "💻 Groq Coding", "callback_data": "ai_groq_coding"}],
-                [{"text": "🧠 Groq Reasoning", "callback_data": "ai_groq_reasoning"}],
-                [{"text": "👁 Gemini", "callback_data": "ai_gemini"}, {"text": "🌐 OpenRouter FREE", "callback_data": "ai_openrouter"}],
-            ]
-        }
-
-        current_label = "🔄 AUTO" if current_mode == "auto" else MANUAL_AI_MODES.get(current_mode, (None,None,None,current_mode))[3]
-        status = (
-            f"🤖 MODE AI: {current_label}\n\n"
-            f"NVIDIA: {'✅ AKTIF' if nvidia else '❌ TIDAK AKTIF'}\n"
-            f"Groq: {'✅ AKTIF' if groq else '❌ TIDAK AKTIF'}\n"
-            f"Gemini: {'✅ AKTIF' if gemini else '❌ TIDAK AKTIF'}\n"
-            f"OpenRouter FREE: {'✅ AKTIF' if openrouter else '❌ TIDAK AKTIF'}\n\n"
-            "Pilih AI/model utama. Fallback GRATIS tetap aktif.\n\n"
-            f"NVIDIA: {NVIDIA_MODEL}\n"
-            f"Gemini: {GEMINI_CHAT_MODEL}\n"
-            f"Groq Coding: {GROQ_CODING_MODEL}\n"
-            f"Groq Reasoning: {GROQ_REASONING_MODEL}\n"
-            f"Groq Fast: {GROQ_FAST_MODEL}\n"
-            f"OpenRouter: {OPENROUTER_FREE_MODEL}\n\n"
-            "💰 PAID MODEL ROUTING: DISABLED"
-        )
-
-        await tg(
-            "sendMessage",
-            {
-                "chat_id": chat_id,
-                "text": clean_telegram_text(status),
-                "reply_markup": keyboard,
-            },
-        )
-
-        return
-
-    # ========================================================
-    # GAMBAR
-    # ========================================================
-
-    if text.startswith(
-        "/gambar"
-    ):
-
-        prompt = command_arg(
-            text
-        )
-
-        if not prompt:
-
-            await send_text(
-                chat_id,
-                """
-🎨 GENERATE GAMBAR
-
-Contoh:
-
-/gambar pagar minimalis hitam modern
-""",
-            )
-
-            return
-
-        await send_text(
-            chat_id,
-            "🎨 Memilih generator gambar GRATIS...",
-        )
-
-        try:
-
-            data, provider = (
-                await asyncio.to_thread(
-                    generate_image,
-                    prompt,
-                )
-            )
-
-            if provider.startswith(
-                "Cloudflare"
-            ):
-
-                await send_photo(
-                    chat_id,
-                    data,
-                    filename="image.jpg",
-                    content_type="image/jpeg",
-                )
-
-            else:
-
-                await send_photo(
-                    chat_id,
-                    data,
-                )
-
-            await send_text(
-                chat_id,
-                f"✅ Gambar dibuat oleh {provider}.",
-            )
-
-        except Exception as e:
-
-            log.exception(
-                "image generation failed"
-            )
-
-            await send_text(
-                chat_id,
-                "❌ Generate gambar gagal.\n"
-                + str(e)[:700],
-            )
-
-        return
-
-    # ========================================================
-    # VIDEO
-    # ========================================================
-
-    if message.get(
-        "video"
-    ):
-
-        await send_text(
-            chat_id,
-            "🎥 Sedang menganalisis video...",
-        )
-
-        try:
-
-            data, path = await tg_file(
-                message["video"]["file_id"]
-            )
-
-            if len(data) > (
-                20 * 1024 * 1024
-            ):
-
-                await send_text(
-                    chat_id,
-                    "❌ Video lebih dari 20 MB.",
-                )
-
-                return
-
-            mime = (
-                "video/quicktime"
-                if path.lower().endswith(
-                    ".mov"
-                )
-                else "video/mp4"
-            )
-
-            answer, video_meta = await asyncio.to_thread(
-                analyze_video,
-                data,
-                mime,
-                caption or
-                """
-Analisa video ini secara detail.
-
-Jika terkait pekerjaan manufaktur,
-bengkel, konstruksi, sipil, tenda,
-kanopi, atau fabrikasi:
-
-- jelaskan objek
-- jelaskan proses
-- jelaskan kondisi
-- jelaskan masalah
-- berikan saran praktis
-
-Jangan mengarang ukuran yang tidak terlihat.
-""",
-            )
-
-            await send_text(
-                chat_id,
-                format_transparent_response(answer, video_meta),
-            )
-
-        except Exception as e:
-
-            log.exception(
-                "video analysis failed"
-            )
-
-            await send_text(
-                chat_id,
-                "❌ Analisis video gagal.\n"
-                + str(e)[:700],
-            )
-
-        return
-
-    # ========================================================
-    # UPLOAD HASIL PEKERJAAN (foto + caption "/pekerjaan <kategori> <lokasi>")
-    # ========================================================
-
-    if message.get("photo") and caption.strip().lower().startswith("/pekerjaan"):
-
-        args = command_arg(caption.strip())
-        parts = args.split(maxsplit=1)
-
-        if len(parts) < 2:
-            await send_text(
-                chat_id,
-                "Format caption belum lengkap.\n\n"
-                "Kirim foto dengan caption:\n"
-                "/pekerjaan <kategori> <lokasi>\n\n"
-                "Contoh:\n/pekerjaan kanopi cibinong",
-            )
-            return
-
-        category_raw, location_raw = parts[0], parts[1]
-
-        await send_text(
-            chat_id,
-            f"⏳ Mengupload foto & menambahkan hasil pekerjaan "
-            f"({category_raw} - {location_raw})...",
-        )
-
-        try:
-            photo_bytes, _ = await tg_file(message["photo"][-1]["file_id"])
-
-            entry = await upload_pekerjaan_from_photo(
-                photo_bytes, category_raw, location_raw
-            )
-
-            await send_text(
-                chat_id,
-                "✅ Berhasil ditambahkan!\n\n"
-                f"Judul: {entry['title']}\n"
-                f"Kategori: {entry['category']}\n\n"
-                "Halaman akan otomatis dibuat dalam 1-2 menit "
-                "(GitHub Action sedang generate halaman).\n"
-                f"Link nanti: https://design-manufaktur.vercel.app{entry['url']}",
-            )
-
-        except Exception as e:
-            log.exception("upload pekerjaan failed")
-            await send_text(
-                chat_id,
-                "❌ Gagal upload hasil pekerjaan.\n" + str(e)[:700],
-            )
-
-        return
-
-    # ========================================================
-    # PHOTO
-    # ========================================================
-
-    if message.get(
-        "photo"
-    ):
-
-        await send_text(
-            chat_id,
-            "🖼️ Gemini Vision sedang menganalisis gambar...",
-        )
-
-        try:
-
-            data, path = await tg_file(
-                message["photo"][-1]["file_id"]
-            )
-
-            mime = (
-                mimetypes.guess_type(
-                    path
-                )[0]
-                or "image/jpeg"
-            )
-
-            prompt = caption or """
-Analisa gambar ini secara detail.
-
-Jika terkait manufaktur, bengkel las,
-tenda, pagar, fabrikasi, konstruksi,
-sipil, atau produk custom:
-
-- jelaskan objek
-- jelaskan komponen
-- jelaskan fungsi
-- jelaskan kondisi
-- jelaskan masalah
-- berikan saran praktis
-
-Jangan mengarang ukuran yang tidak terlihat.
-"""
-
-            answer, model, vision_meta = await asyncio.to_thread(
-                analyze_image,
-                data,
-                mime,
-                prompt,
-            )
-
-            await send_text(
-                chat_id,
-                format_transparent_response(answer, vision_meta),
-            )
-
-            log.info(
-                "VISION SUCCESS | model=%s",
-                model,
-            )
-
-        except Exception as e:
-
-            log.exception(
-                "image analysis failed"
-            )
-
-            await send_text(
-                chat_id,
-                "❌ Analisis gambar gagal.\n"
-                + str(e)[:700],
-            )
-
-        return
-
-    # ========================================================
-    # NORMAL CHAT
-    # ========================================================
-
-    if not text:
-        return
-
-    try:
-
-        conversation_mode = user_conversation_mode.get(uid, "fast")
-        if conversation_mode == "agent":
-            try:
-                await load_persistent_memory(uid)
-            except Exception as e:
-                await send_text(
-                    chat_id,
-                    "⚠️ AGENT tidak dapat memuat memory GitHub. Pesan tidak diproses agar memory tidak tertukar.\n\n"
-                    f"Detail: {type(e).__name__}"
-                )
-                return
-        else:
-            # FAST is strictly stateless. Persistent GitHub memory remains untouched.
-            memory[uid] = []
-
-        await tg(
-            "sendChatAction",
-            {
-                "chat_id": chat_id,
-                "action": "typing",
-            },
-        )
-
-        answer, meta = await asyncio.to_thread(
-            chat_router,
-            uid,
-            text,
-        )
-
-        remember(
-            uid,
-            "user",
-            text,
-        )
-
-        # Simpan jawaban mentah agar header transparansi tidak ikut masuk memory.
-        remember(
-            uid,
-            "assistant",
-            answer,
-        )
-
-        if conversation_mode == "agent":
-            try:
-                saved_count = await save_persistent_memory(uid)
-            except Exception as e:
-                await send_text(
-                    chat_id,
-                    "⚠️ Jawaban berhasil dibuat, tetapi memory BELUM tersimpan ke GitHub.\n"
-                    f"Detail: {type(e).__name__}"
-                )
-                return
-
-        transparent_answer = format_transparent_response(answer, meta)
-
-        await send_text(
-            chat_id,
-            transparent_answer,
-        )
-
-        log.info(
-            "CHAT DONE | task=%s | provider=%s | model=%s | status=%s | elapsed=%.2fs | routes=%s",
-            meta.get("task"),
-            meta.get("provider_label"),
-            meta.get("model"),
-            meta.get("status"),
-            meta.get("elapsed", 0.0),
-            meta.get("routes"),
-        )
-
-    except Exception as e:
-
-        log.exception(
-            "chat failed"
-        )
-
-        await send_text(
-            chat_id,
-            "❌ Semua AI GRATIS gagal untuk request ini.\n\n"
-            + str(e)[:700],
-        )
-
-
-# ============================================================
-# ROOT
-# ============================================================
-
-@app.get("/")
-async def root():
-
-    return {
-        "ok": True,
-        "service":
-            "Designmanufaktur Super AI Agent + Civil Calculator",
-
-        "free_only":
-            True,
-
-        "conversation_modes": ["fast", "agent"],
-        "persistent_memory": "github_for_agent_only",
-        "persistent_memory_limit": MAX_MEMORY,
-        "agent_loads_all_saved_memory": True,
-
-        "telegram_format":
-            "clean_and_mobile_friendly",
-
-        "civil_calculator":
-            True,
-
-        "providers": {
-
-            "gemini":
-                bool(gemini),
-
-            "openrouter_free":
-                bool(openrouter),
-
-            "groq_free_tier":
-                bool(groq),
-
-            "nvidia_free_trial":
-                bool(nvidia),
-
-            "cloudflare_flux":
-                CLOUDFLARE_ENABLED,
-
-            "pollinations_fallback":
-                POLLINATIONS_ENABLED,
-
-        },
-
-        "civil_features": [
-
-            "concrete",
-            "sloof",
-            "kolom",
-            "balok",
-            "plat",
-            "footplat",
-            "pondasi",
-            "dinding",
-            "plester",
-            "acian",
-            "galian",
-            "urugan",
-            "rebar",
-
-        ],
-
-        "models": {
-
-            "gemini":
-                GEMINI_CHAT_MODEL,
-
-            "openrouter":
-                OPENROUTER_FREE_MODEL,
-
-            "groq_coding":
-                GROQ_CODING_MODEL,
-
-            "groq_reasoning":
-                GROQ_REASONING_MODEL,
-
-            "groq_fast":
-                GROQ_FAST_MODEL,
-
-            "nvidia":
-                NVIDIA_MODEL,
-
-            "cloudflare_image":
-                CLOUDFLARE_IMAGE_MODEL,
-
-        },
-    }
-
-
-# ============================================================
-# API
-# ============================================================
-
-@app.get("/api")
-async def api_root():
-
-    return await root()
-
-
-# ============================================================
-# WEBHOOK IMPLEMENTATION
-# ============================================================
-
-async def webhook_impl(
-    request: Request,
-    x_telegram_bot_api_secret_token:
-        Optional[str],
-):
-
-    if (
-        WEBHOOK_SECRET
-        and
-        x_telegram_bot_api_secret_token
-        != WEBHOOK_SECRET
-    ):
-
-        raise HTTPException(
-            status_code=403,
-            detail="Invalid webhook secret",
-        )
-
-    update = await request.json()
-
-    await handle(
-        update
-    )
-
-    return {
-        "ok": True
-    }
-
-
-# ============================================================
-# TELEGRAM WEBHOOK
-# ============================================================
-
-@app.post(
-    "/api/webhook"
-)
-async def webhook(
-    request: Request,
-    x_telegram_bot_api_secret_token:
-        Optional[str] = Header(
-            default=None
-        ),
-):
-
-    return await webhook_impl(
-        request,
-        x_telegram_bot_api_secret_token,
-    )
-
-
-# ============================================================
-# LEGACY ROOT WEBHOOK
-# ============================================================
-
-@app.post("/")
-async def root_post(
-    request: Request,
-    x_telegram_bot_api_secret_token:
-        Optional[str] = Header(
-            default=None
-        ),
-):
-
-    return await webhook_impl(
-        request,
-        x_telegram_bot_api_secret_token,
-    )
+            await save_persistent
