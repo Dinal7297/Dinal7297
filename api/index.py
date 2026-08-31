@@ -16,22 +16,12 @@ from google import genai
 from google.genai import types
 from openai import OpenAI
 
-
-# ============================================================
-# APP
-# ============================================================
-
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("designmanufaktur")
 
 app = FastAPI(
     title="Designmanufaktur Super AI Agent + Civil Calculator"
 )
-
-
-# ============================================================
-# ENVIRONMENT
-# ============================================================
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
@@ -58,53 +48,10 @@ OPENROUTER_FREE_MODEL = os.getenv(
     "openrouter/free",
 )
 
-GROQ_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_FAST_MODEL = os.getenv(
-    "GROQ_FAST_MODEL",
-    "openai/gpt-oss-20b"
-)
-
-GROQ_REASONING_MODEL = os.getenv(
-    "GROQ_REASONING_MODEL",
-    "openai/gpt-oss-120b"
-)
-
-GROQ_CODING_MODEL = os.getenv(
-    "GROQ_CODING_MODEL",
-    "qwen/qwen3-32b"
-)
-
-# ============================================================
-# NVIDIA NIM
-# ============================================================
 NVIDIA_KEY = os.getenv("NVIDIA_API_KEY", "")
 NVIDIA_MODEL = os.getenv(
     "NVIDIA_MODEL",
     "deepseek-ai/deepseek-v4-flash-0731",
-)
-NVIDIA_MAX_OUTPUT_TOKENS = int(
-    os.getenv("NVIDIA_MAX_OUTPUT_TOKENS", "4096")
-)
-NVIDIA_TIMEOUT_SECONDS = float(
-    os.getenv("NVIDIA_TIMEOUT_SECONDS", "8")
-)
-
-# ------------------------------------------------------------
-# MODEL CADANGAN TAMBAHAN (BARU)
-# ------------------------------------------------------------
-# Tidak dibaca dari env yang mungkin salah/sudah usang di hosting.
-# Ini hanya lapisan cadangan EKSTRA supaya chat tetap jalan walau
-# GROQ_FAST_MODEL / GROQ_REASONING_MODEL / GROQ_CODING_MODEL /
-# OPENROUTER_FREE_MODEL yang di-set lewat env sudah tidak valid
-# (model_not_found / dihapus provider).
-GROQ_BACKUP_MODEL_1 = "openai/gpt-oss-20b"
-GROQ_BACKUP_MODEL_2 = "openai/gpt-oss-120b"
-GROQ_BACKUP_MODEL_3 = "qwen/qwen3-32b"
-GROQ_BACKUP_MODEL_4 = "llama-3.1-8b-instant"
-GROQ_BACKUP_MODEL_5 = "gemma2-9b-it"
-
-OPENROUTER_BACKUP_MODEL = (
-    "meta-llama/llama-3.3-70b-instruct:free"
 )
 
 POLLINATIONS_KEY = os.getenv(
@@ -123,10 +70,6 @@ POLLINATIONS_IMAGE_MODEL = os.getenv(
 )
 
 POLLINATIONS_BASE_URL = "https://gen.pollinations.ai"
-
-# ------------------------------------------------------------
-# CLOUDFLARE WORKERS AI (FLUX) - GENERATOR GAMBAR UTAMA (BARU)
-# ------------------------------------------------------------
 
 CLOUDFLARE_ACCOUNT_ID = os.getenv(
     "CLOUDFLARE_ACCOUNT_ID",
@@ -148,299 +91,23 @@ CLOUDFLARE_ENABLED = bool(
     and CLOUDFLARE_API_TOKEN
 )
 
-
-# ============================================================
-# SYSTEM PROMPT
-# ============================================================
-
 SYSTEM = """
-Kamu adalah Designmanufaktur Super AI Agent.
+Kamu adalah Designmanufaktur Super AI Agent untuk bengkel las, tenda, kanopi, pagar, fabrikasi, manufaktur, konstruksi ringan, sipil, coding, bisnis, konten, dan pemasaran.
 
-Kamu adalah asisten AI praktis untuk:
+Jawab Bahasa Indonesia kecuali diminta lain. Gaya: langsung, praktis, jelas, ringkas, nyaman di HP, satuan jelas. Jangan mengarang data. Jika data belum ada, tulis "Data belum ditentukan." Untuk hitungan: tampilkan asumsi, rumus penting, hasil, validasi, dan satuan. Jangan menyatakan struktur aman tanpa perhitungan engineer.
 
-- bengkel las
-- kanopi
-- tenda
-- pagar
-- rangka baja
-- hollow
-- pipa
-- fabrikasi
-- manufaktur
-- konstruksi ringan
-- pekerjaan sipil
-- beton
-- pondasi
-- sloof
-- kolom
-- balok
-- plat lantai
-- dinding
-- plesteran
-- acian
-- besi tulangan
-- cutting list
-- estimasi material
-- engineering
-- perhitungan teknis
-- coding
-- bisnis
-- konten
-- pemasaran
+Format Telegram sederhana. Gunakan heading seperlunya: 📋 DATA, ⚙️ ASUMSI, 🧮 PERHITUNGAN, ✂️ CUTTING LIST, 🏗️ CIVIL CALCULATOR, 🔩 MATERIAL, 🔍 VALIDASI, 📊 RINGKASAN, 📝 CATATAN, 🎯 KESIMPULAN. Gunakan • untuk daftar dan ✅/❌/⚠️ untuk status. Hindari Markdown berlebihan dan tabel |.
 
-============================================================
-BAHASA
-============================================================
+CIVIL CALCULATOR mendukung: beton, semen/pasir/kerikil/air, sloof, kolom, balok, plat, footplat, pondasi beton/batu kali, dinding bata/batako, plester, acian, lantai/screed, galian, urugan, besi tulangan, berat besi, jumlah batang, dan estimasi bendrat.
 
-Jawab dalam Bahasa Indonesia kecuali pengguna meminta bahasa lain.
+Jika mix design tidak diberikan, estimasi beton memakai nominal 1:2:3, faktor kering 1,54, semen 1.440 kg/m³, zak 50 kg, air sekitar w/c 0,50. Ini bukan mix design laboratorium.
 
-============================================================
-GAYA JAWABAN
-============================================================
+BESI: berat kg/m = D²/162. Batang standar 12 m kecuali pengguna memberi panjang lain. Jika struktur tidak lengkap, jangan mengarang diameter, jumlah tulangan, jarak begel, mutu, beban, bentang, atau tanah. Bedakan estimasi material dengan desain struktur.
 
-- langsung ke inti
-- praktis
-- jelas
-- tidak bertele-tele
-- nyaman dibaca di HP
-- gunakan satuan yang jelas
-- hasil harus bisa dipakai untuk pekerjaan lapangan
-- jangan membuat jawaban terlihat rumit tanpa alasan
+CUTTING LIST: hitung kebutuhan, batas bawah teoritis, packing, kapasitas tiap batang, jumlah potongan/batang, total material dan sisa. Bedakan TRUE WASTE dan REUSABLE OFFCUT serta hindari double-counting.
 
-============================================================
-FORMAT TELEGRAM
-============================================================
-
-Jangan menggunakan Markdown berlebihan.
-
-HINDARI:
-
-**bold**
-*italic*
-###
----
-tabel dengan karakter |
-
-Gunakan heading:
-
-📋 DATA
-⚙️ ASUMSI
-🧮 PERHITUNGAN
-✂️ CUTTING LIST
-🏗️ CIVIL CALCULATOR
-🔩 MATERIAL
-🔍 VALIDASI
-📊 RINGKASAN
-📝 CATATAN
-🎯 KESIMPULAN
-
-Gunakan:
-
-• Item pertama
-• Item kedua
-• Item ketiga
-
-Status:
-
-✅ PASS
-❌ FAILED
-⚠️ PERLU DIPERIKSA
-
-============================================================
-ATURAN AKURASI
-============================================================
-
-1. Jangan mengarang ukuran, harga, material, beban,
-   kapasitas, mutu beton, atau spesifikasi yang tidak diberikan.
-
-2. Jika data belum tersedia, tulis:
-   "Data belum ditentukan."
-
-3. Untuk perhitungan:
-   - tuliskan asumsi
-   - tuliskan rumus penting
-   - hitung hasil
-   - validasi ulang
-   - tuliskan hasil akhir
-   - gunakan satuan konsisten
-
-4. Jangan menyatakan struktur aman hanya berdasarkan
-   perkiraan sederhana.
-
-5. Untuk struktur yang memerlukan desain:
-   hasil adalah estimasi awal dan harus diverifikasi
-   engineer/insinyur struktur.
-
-============================================================
-CIVIL CALCULATOR
-============================================================
-
-Bot memiliki kemampuan menghitung:
-
-1. Volume beton
-2. Kebutuhan semen beton
-3. Kebutuhan pasir beton
-4. Kebutuhan kerikil beton
-5. Kebutuhan air
-6. Sloof
-7. Kolom
-8. Balok
-9. Plat beton
-10. Footplat
-11. Pondasi beton
-12. Pondasi batu kali
-13. Dinding bata
-14. Dinding batako
-15. Plesteran
-16. Acian
-17. Lantai beton
-18. Screed
-19. Galian
-20. Urugan
-21. Besi tulangan
-22. Berat besi
-23. Jumlah batang besi standar
-24. Kebutuhan kawat bendrat secara estimasi
-
-============================================================
-ASUMSI CIVIL
-============================================================
-
-Jika pengguna meminta estimasi material beton dan tidak
-memberikan mix design, gunakan asumsi nominal 1 : 2 : 3.
-
-Faktor volume kering beton:
-1,54
-
-Estimasi berat semen:
-1.440 kg/m³
-
-Berat 1 zak semen:
-50 kg
-
-Untuk estimasi beton 1 : 2 : 3:
-
-Total bagian = 6
-
-Semen:
-1/6 × volume kering
-
-Pasir:
-2/6 × volume kering
-
-Kerikil:
-3/6 × volume kering
-
-Air:
-gunakan w/c sekitar 0,50 dari berat semen,
-hanya sebagai estimasi awal.
-
-HASIL INI BUKAN MIX DESIGN LABORATORIUM.
-
-============================================================
-RUMUS BESI
-============================================================
-
-Berat besi per meter:
-
-berat kg/m =
-diameter² / 162
-
-Contoh:
-D10:
-10² / 162 = 0,617 kg/m
-
-D13:
-13² / 162 = 1,043 kg/m
-
-D16:
-16² / 162 = 1,580 kg/m
-
-Jika panjang total besi diketahui:
-
-berat total =
-panjang total × berat per meter
-
-Batang standar default:
-12 meter
-
-Jika pengguna memberikan panjang batang berbeda,
-gunakan panjang tersebut.
-
-Jangan menganggap jumlah besi struktur aman hanya
-berdasarkan hitungan berat.
-
-============================================================
-ATURAN STRUKTUR
-============================================================
-
-Untuk:
-
-- sloof
-- kolom
-- balok
-- plat
-- footplat
-- pondasi
-
-pisahkan:
-
-volume beton
-estimasi material
-besi jika data tersedia
-asumsi
-validasi
-catatan struktural
-
-Jika diameter, jumlah tulangan, jarak begel,
-mutu beton, beban, kondisi tanah, bentang,
-atau data struktural tidak diberikan:
-
-jangan mengarang.
-
-Tulis:
-"Data struktur belum ditentukan."
-
-============================================================
-CUTTING LIST
-============================================================
-
-Jika pengguna meminta cutting list:
-
-1. Hitung semua kebutuhan.
-2. Hitung batas bawah teoritis.
-3. Lakukan packing.
-4. Setiap batang tidak boleh melebihi kapasitas.
-5. Validasi jumlah potongan.
-6. Validasi jumlah batang.
-7. Validasi total material.
-8. Validasi total sisa.
-9. Bedakan TRUE WASTE dan REUSABLE OFFCUT.
-10. Periksa double counting.
-11. Jika komponen lebih panjang dari batang standar,
-    gunakan sambungan dan tandai.
-
-Jangan menggunakan ceil(total / panjang batang)
-sebagai hasil final.
-
-Angka tersebut hanya batas bawah teoritis.
-
-============================================================
-PRIVASI
-============================================================
-
-JANGAN PERNAH menampilkan:
-
-- API key
-- token
-- password
-- secret
+Untuk coding prioritaskan kode yang dapat dijalankan, sintaks benar, debugging, dan solusi praktis. Untuk reasoning analisis sistematis dan validasi kesimpulan. Untuk technical prioritaskan ukuran, material, rangka, fabrikasi, cutting list, sambungan, efisiensi, dan asumsi teknik.
 """
-
-
-# ============================================================
-# AI CLIENTS
-# ============================================================
 
 gemini = (
     genai.Client(api_key=GEMINI_KEY)
@@ -457,91 +124,28 @@ openrouter = (
     else None
 )
 
-groq = (
-    OpenAI(
-        api_key=GROQ_KEY,
-        base_url="https://api.groq.com/openai/v1",
-        timeout=float(os.getenv("GROQ_TIMEOUT_SECONDS", "12")),
-        max_retries=0,
-    )
-    if GROQ_KEY
-    else None
-)
-
-nvidia = (
-    OpenAI(
-        api_key=NVIDIA_KEY,
-        base_url="https://integrate.api.nvidia.com/v1",
-        timeout=NVIDIA_TIMEOUT_SECONDS,
-        max_retries=0,
-    )
-    if NVIDIA_KEY
-    else None
-)
-
-
-# ============================================================
-# MEMORY + CONVERSATION MODE
-# ============================================================
-
 memory = {}
-MAX_MEMORY = 200
-user_conversation_mode = {}
-user_ai_mode = {}
+MAX_MEMORY = 20
 
-MANUAL_AI_MODES = {
-    "nvidia_fast": ("nvidia", NVIDIA_MODEL, None, "🟢 NVIDIA Fast"),
-    "nvidia_coding": ("nvidia", NVIDIA_MODEL, None, "💻 NVIDIA Coding"),
-    "nvidia_technical": ("nvidia", NVIDIA_MODEL, None, "🔧 NVIDIA Technical"),
-    "nvidia_reasoning": ("nvidia", NVIDIA_MODEL, None, "🧠 NVIDIA Reasoning"),
-    "groq_fast": ("groq", GROQ_FAST_MODEL, None, "⚡ Groq Fast"),
-    "groq_coding": ("groq", GROQ_CODING_MODEL, None, "💻 Groq Coding"),
-    "groq_reasoning": ("groq", GROQ_REASONING_MODEL, None, "🧠 Groq Reasoning"),
-    "gemini": ("gemini", GEMINI_CHAT_MODEL, None, "👁️ Gemini"),
-    "openrouter": ("openrouter", OPENROUTER_FREE_MODEL, None, "🌐 OpenRouter FREE"),
-}
-
-# ============================================================
-# PERSISTENT MEMORY — SEPARATE GITHUB REPOSITORY
-# ============================================================
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "Dinal7297/designmanufaktur-memory")
 GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
 GITHUB_MEMORY_DIR = "memory"
 GITHUB_API = "https://api.github.com"
 
-# ============================================================
-# UPLOAD HASIL PEKERJAAN — REPO WEBSITE (terpisah dari repo memory)
-# ============================================================
-# Reuse GITHUB_TOKEN yang sama (asal token itu juga punya akses ke
-# repo website). Kalau perlu token berbeda, set WEBSITE_GITHUB_TOKEN
-# di environment variable hosting.
 WEBSITE_GITHUB_TOKEN = os.getenv("WEBSITE_GITHUB_TOKEN", GITHUB_TOKEN)
 WEBSITE_GITHUB_REPO = os.getenv("WEBSITE_GITHUB_REPO", "Dinal7297/Design-Manufaktur-")
 WEBSITE_GITHUB_BRANCH = os.getenv("WEBSITE_GITHUB_BRANCH", "main")
 WEBSITE_DATA_PATH = "data/pekerjaan.json"
 
-# ------------------------------------------------------------
-# BATAS KONTEKS YANG DIKIRIM KE LLM (BARU)
-# ------------------------------------------------------------
-# Terpisah dari MAX_MEMORY (yang tetap dipakai untuk penyimpanan
-# permanent memory di GitHub, TIDAK berubah). Ini hanya mengatur
-# berapa banyak riwayat yang benar-benar dikirim ke provider AI
-# per request, supaya tidak kena limit token/rate dari provider
-# gratis (khususnya Groq yang TPM-nya kecil).
 MAX_CONTEXT_TURNS = 8
 MAX_CONTEXT_CHARS_PER_ITEM = 1200
 
-GROQ_MAX_CONTEXT_TURNS = 4
-GROQ_MAX_CONTEXT_CHARS_PER_ITEM = 400
-GROQ_MAX_OUTPUT_TOKENS = 1536
-
 OPENROUTER_MAX_OUTPUT_TOKENS = 2048
-
+NVIDIA_MAX_OUTPUT_TOKENS = 2048
 
 def history(uid):
     return memory.setdefault(uid, [])
-
 
 def remember(uid, role, content):
 
@@ -551,7 +155,6 @@ def remember(uid, role, content):
     })
 
     memory[uid] = history(uid)[-MAX_MEMORY:]
-
 
 def _trim_history_for_context(
     uid,
@@ -588,10 +191,8 @@ def _trim_history_for_context(
 
     return trimmed
 
-
 def _memory_path(uid):
     return f"{GITHUB_MEMORY_DIR}/{str(uid)}.json"
-
 
 async def load_persistent_memory(uid):
     uid = str(uid)
@@ -623,7 +224,6 @@ async def load_persistent_memory(uid):
         log.warning("PERSISTENT MEMORY LOAD FAILED | uid=%s | %s", uid, str(e)[:300])
         memory.setdefault(uid, [])
 
-
 async def save_persistent_memory(uid):
     uid = str(uid)
     if not GITHUB_TOKEN or not GITHUB_REPO:
@@ -648,22 +248,6 @@ async def save_persistent_memory(uid):
     except Exception as e:
         log.warning("PERSISTENT MEMORY SAVE FAILED | uid=%s | %s", uid, str(e)[:300])
 
-
-# ============================================================
-# UPLOAD HASIL PEKERJAAN KE REPO WEBSITE (fitur baru, aditif)
-# ============================================================
-# Alur: user kirim FOTO ke bot dengan caption diawali "/pekerjaan",
-# format: /pekerjaan <kategori> <lokasi>
-# contoh:  /pekerjaan kanopi cibinong
-#
-# Bot akan:
-#  1) upload foto ke assets/pekerjaan/<kategori>/images/<slug>.jpg
-#  2) tambahkan 1 entri baru ke data/pekerjaan.json
-#  3) push ke branch main -> GitHub Action otomatis generate halaman
-#
-# Tidak menyentuh/mengubah data/pekerjaan.json manapun secara manual,
-# hanya menambah 1 entri baru di akhir array lewat GitHub Contents API.
-
 CATEGORY_FOLDER_MAP = {
     "kanopi": "kanopi",
     "pagar": "pagar",
@@ -675,13 +259,11 @@ CATEGORY_FOLDER_MAP = {
     "tenda": "tenda",
 }
 
-
 def _slugify(text):
     text = (text or "").strip().lower()
     text = re.sub(r"[^a-z0-9]+", "-", text)
     text = re.sub(r"-+", "-", text).strip("-")
     return text or "item"
-
 
 async def _github_get_json(repo, path, token, branch):
     """Ambil isi file JSON dari GitHub. Return (data_list, sha) atau ([], None) kalau belum ada."""
@@ -704,7 +286,6 @@ async def _github_get_json(repo, path, token, branch):
         data = []
     return data, body.get("sha")
 
-
 async def _github_put_file(repo, path, content_bytes, message, token, branch, sha=None):
     """Simpan/replace 1 file (bisa teks atau gambar) ke GitHub lewat Contents API."""
     url = f"{GITHUB_API}/repos/{repo}/contents/{path}"
@@ -721,7 +302,6 @@ async def _github_put_file(repo, path, content_bytes, message, token, branch, sh
         resp = await client.put(url, headers=headers, json=body)
     resp.raise_for_status()
     return resp.json()
-
 
 def _build_pekerjaan_entry(category_raw, location_raw, image_path):
     category_slug = CATEGORY_FOLDER_MAP.get(
@@ -762,7 +342,6 @@ def _build_pekerjaan_entry(category_raw, location_raw, image_path):
         "content": content,
     }, category_slug
 
-
 async def upload_pekerjaan_from_photo(photo_bytes, category_raw, location_raw):
     """
     Upload 1 foto + 1 entri data pekerjaan baru ke repo website.
@@ -773,7 +352,6 @@ async def upload_pekerjaan_from_photo(photo_bytes, category_raw, location_raw):
             "WEBSITE_GITHUB_TOKEN / WEBSITE_GITHUB_REPO belum diset di environment variable."
         )
 
-    # tentukan nama file & path dulu (butuh category_slug)
     category_slug_preview = CATEGORY_FOLDER_MAP.get(
         category_raw.strip().lower(), _slugify(category_raw)
     )
@@ -781,11 +359,9 @@ async def upload_pekerjaan_from_photo(photo_bytes, category_raw, location_raw):
     image_path = f"/assets/pekerjaan/{category_slug_preview}/images/{filename_preview}"
 
     entry, category_slug = _build_pekerjaan_entry(category_raw, location_raw, image_path)
-    # pastikan filename di entry & file yang diupload konsisten
     filename = image_path.split("/")[-1]
     github_image_path = f"assets/pekerjaan/{category_slug}/images/{filename}"
 
-    # 1) upload foto
     await _github_put_file(
         WEBSITE_GITHUB_REPO,
         github_image_path,
@@ -795,7 +371,6 @@ async def upload_pekerjaan_from_photo(photo_bytes, category_raw, location_raw):
         WEBSITE_GITHUB_BRANCH,
     )
 
-    # 2) update data/pekerjaan.json (ambil dulu, tambahkan, simpan lagi)
     data_list, sha = await _github_get_json(
         WEBSITE_GITHUB_REPO, WEBSITE_DATA_PATH, WEBSITE_GITHUB_TOKEN, WEBSITE_GITHUB_BRANCH
     )
@@ -813,7 +388,6 @@ async def upload_pekerjaan_from_photo(photo_bytes, category_raw, location_raw):
 
     return entry
 
-
 def build_messages(
     uid,
     text,
@@ -823,120 +397,30 @@ def build_messages(
 ):
 
     task_hint = {
-
-        "coding": """
-TUGAS CODING.
-
-Prioritaskan:
-- kode yang dapat dijalankan
-- ketepatan sintaks
-- debugging
-- struktur program
-- solusi praktis
-""",
-
-        "reasoning": """
-TUGAS REASONING.
-
-Analisis masalah secara sistematis.
-Periksa kemungkinan penyebab.
-Validasi kesimpulan sebelum menjawab.
-""",
-
-        "technical": """
-TUGAS TEKNIK/MANUFAKTUR.
-
-Prioritaskan:
-- ukuran
-- material
-- rangka
-- fabrikasi
-- cutting list
-- jumlah batang
-- sambungan
-- efisiensi material
-- asumsi teknik
-- pekerjaan sipil
-
-Untuk cutting list:
-WAJIB validasi seluruh angka sebelum menjawab.
-""",
-
-        "civil": """
-TUGAS CIVIL CALCULATOR.
-
-Prioritaskan:
-- volume
-- dimensi
-- kebutuhan material
-- semen
-- pasir
-- kerikil
-- air
-- besi
-- berat besi
-- pondasi
-- dinding
-- plester
-- acian
-- galian
-- urugan
-
-Jika data tidak diberikan:
-jangan mengarang.
-
-Untuk struktur:
-hasil adalah estimasi awal,
-bukan pengganti desain engineer.
-""",
-
-        "math": """
-TUGAS MATEMATIKA.
-
-Hitung dengan teliti.
-Tampilkan rumus penting.
-Gunakan satuan.
-Periksa kembali hasil.
-""",
-
-        "creative": """
-TUGAS KREATIF.
-
-Buat hasil yang siap digunakan,
-praktis, menarik, dan sesuai tujuan.
-""",
-
-        "general": """
-TUGAS UMUM.
-
-Jawab langsung, jelas, dan berguna.
-""",
-
+        "coding": "Berikan kode yang dapat dijalankan; prioritaskan sintaks, debugging, dan solusi praktis.",
+        "reasoning": "Analisis sistematis, periksa penyebab, dan validasi kesimpulan.",
+        "technical": "Prioritaskan ukuran, material, rangka, fabrikasi, cutting list, sambungan, efisiensi, dan asumsi teknik.",
+        "civil": "Hitung teliti; jangan mengarang data. Bedakan estimasi material dari desain struktur.",
+        "math": "Hitung teliti dan tampilkan asumsi penting.",
+        "creative": "Buat hasil kreatif yang siap digunakan.",
+        "general": "Jawab langsung, jelas, dan praktis.",
     }.get(task, "")
-
-    mode = user_conversation_mode.get(str(uid), "fast")
-    context = []
-    if mode == "agent":
-        context = _trim_history_for_context(
-            uid, max_turns, max_chars_per_item
-        )
 
     return [
         {
             "role": "system",
             "content": SYSTEM + "\n\n" + task_hint,
         }
-    ] + context + [
+    ] + _trim_history_for_context(
+        uid,
+        max_turns,
+        max_chars_per_item,
+    ) + [
         {
             "role": "user",
             "content": text,
         }
     ]
-
-
-# ============================================================
-# NUMBER PARSER
-# ============================================================
 
 def parse_number(value):
     """
@@ -974,7 +458,6 @@ def parse_number(value):
     except Exception:
         return None
 
-
 def fmt(value, decimals=3):
 
     if value is None:
@@ -984,11 +467,6 @@ def fmt(value, decimals=3):
         return str(int(round(value)))
 
     return f"{value:.{decimals}f}".rstrip("0").rstrip(".")
-
-
-# ============================================================
-# DIMENSION PARSER
-# ============================================================
 
 def extract_dimensions(text):
 
@@ -1013,7 +491,6 @@ def extract_dimensions(text):
             return values
 
     return []
-
 
 def extract_value_with_unit(text, units):
 
@@ -1045,7 +522,6 @@ def extract_value_with_unit(text, units):
 
     return value, unit
 
-
 def to_meter(value, unit):
 
     unit = unit.lower()
@@ -1060,11 +536,6 @@ def to_meter(value, unit):
         return value
 
     return value
-
-
-# ============================================================
-# CIVIL CONCRETE CALCULATOR
-# ============================================================
 
 def concrete_materials(
     volume,
@@ -1113,7 +584,6 @@ def concrete_materials(
         "water_liter": water_liter,
     }
 
-
 def civil_concrete_calculation(
     text,
     title="KEBUTUHAN BETON"
@@ -1128,10 +598,6 @@ def civil_concrete_calculation(
     else:
 
         return None
-
-    # Jika ukuran terlihat seperti cm/mm,
-    # pengguna sebaiknya menyebut unit.
-    # Default hanya meter jika tidak ada unit.
 
     volume = p * l * t
 
@@ -1188,11 +654,6 @@ dan verifikasi engineer/insinyur struktur.
 
     return answer.strip()
 
-
-# ============================================================
-# CIVIL WALL CALCULATOR
-# ============================================================
-
 def civil_wall_calculation(text):
 
     dims = extract_dimensions(text)
@@ -1212,8 +673,6 @@ def civil_wall_calculation(text):
 
         material_name = "batako"
 
-        # Estimasi umum.
-        # Nilai dapat berbeda sesuai ukuran batako.
         pieces_per_m2 = 12.5
 
     else:
@@ -1226,12 +685,10 @@ def civil_wall_calculation(text):
         area * pieces_per_m2
     )
 
-    # Mortar sederhana:
     mortar_per_m2 = 0.02
 
     mortar_volume = area * mortar_per_m2
 
-    # Estimasi campuran mortar 1:4
     dry_factor = 1.33
 
     dry_mortar = (
@@ -1298,11 +755,6 @@ ketebalan nat, bukaan pintu/jendela, pecahan, dan metode
 pemasangan.
 """.strip()
 
-
-# ============================================================
-# PLASTER CALCULATOR
-# ============================================================
-
 def civil_plaster_calculation(text):
 
     dims = extract_dimensions(text)
@@ -1339,7 +791,6 @@ def civil_plaster_calculation(text):
 
     dry_volume = volume * dry_factor
 
-    # 1:4
     cement_volume = dry_volume / 5
 
     sand_volume = (
@@ -1393,11 +844,6 @@ ketebalan, permukaan dinding, campuran, dan kehilangan
 material di lapangan.
 """.strip()
 
-
-# ============================================================
-# ACIAN CALCULATOR
-# ============================================================
-
 def civil_acian_calculation(text):
 
     dims = extract_dimensions(text)
@@ -1409,8 +855,6 @@ def civil_acian_calculation(text):
 
     area = p * h
 
-    # Estimasi konsumsi acian:
-    # sekitar 1,5 kg/m2/mm
     thickness_mm = 2
 
     thickness_data = extract_value_with_unit(
@@ -1472,11 +916,6 @@ Konsumsi aktual mengikuti produk acian yang digunakan,
 ketebalan aplikasi, dan kondisi permukaan.
 """.strip()
 
-
-# ============================================================
-# EXCAVATION / URUGAN
-# ============================================================
-
 def civil_volume_calculation(
     text,
     title,
@@ -1521,11 +960,6 @@ Kebutuhan pembelian aktual dapat berbeda karena
 pemadatan, swell, penyusutan, dan kehilangan material.
 """.strip()
 
-
-# ============================================================
-# REBAR CALCULATOR
-# ============================================================
-
 def civil_rebar_calculation(text):
 
     t = text.lower()
@@ -1553,7 +987,6 @@ def civil_rebar_calculation(text):
     if not diameter:
         return None
 
-    # Jumlah batang
     batang_match = re.search(
         r"(\d+(?:[.,]\d+)?)\s*(?:batang|btg)",
         t
@@ -1568,7 +1001,6 @@ def civil_rebar_calculation(text):
             )
         )
 
-    # Panjang total
     panjang_match = re.search(
         r"(?:panjang|total)\s*"
         r"(\d+(?:[.,]\d+)?)\s*m",
@@ -1582,8 +1014,6 @@ def civil_rebar_calculation(text):
             panjang_match.group(1)
         )
 
-    # Jika hanya "besi D10 20 m"
-    # dan tidak ditemukan keyword panjang
     if panjang_total is None:
 
         simple_length = re.search(
@@ -1688,11 +1118,6 @@ Jumlah dan diameter tulangan struktur harus ditentukan
 berdasarkan perhitungan engineer.
 """.strip()
 
-
-# ============================================================
-# FOOTPLAT
-# ============================================================
-
 def civil_footplat_calculation(text):
 
     dims = extract_dimensions(text)
@@ -1774,11 +1199,6 @@ Diperlukan data seperti:
 
 Untuk desain final, verifikasi engineer struktur diperlukan.
 """.strip()
-
-
-# ============================================================
-# SLOOF / KOLOM / BALOK / PLAT
-# ============================================================
 
 def civil_structural_member_calculation(
     text,
@@ -1868,18 +1288,9 @@ Semen:
 sekitar {materials["cement_sacks"]} zak
 """.strip()
 
-
-# ============================================================
-# CIVIL MASTER ROUTER
-# ============================================================
-
 def civil_calculator(text):
 
     t = text.lower().strip()
-
-    # --------------------------------------------------------
-    # BESI
-    # --------------------------------------------------------
 
     if (
         "besi" in t
@@ -1891,10 +1302,6 @@ def civil_calculator(text):
         if result:
             return result
 
-    # --------------------------------------------------------
-    # FOOTPLAT
-    # --------------------------------------------------------
-
     if (
         "footplat" in t
         or "foot plate" in t
@@ -1904,10 +1311,6 @@ def civil_calculator(text):
 
         if result:
             return result
-
-    # --------------------------------------------------------
-    # SLOOF
-    # --------------------------------------------------------
 
     if "sloof" in t:
 
@@ -1919,10 +1322,6 @@ def civil_calculator(text):
         if result:
             return result
 
-    # --------------------------------------------------------
-    # KOLOM
-    # --------------------------------------------------------
-
     if "kolom" in t:
 
         result = civil_structural_member_calculation(
@@ -1933,10 +1332,6 @@ def civil_calculator(text):
         if result:
             return result
 
-    # --------------------------------------------------------
-    # BALOK
-    # --------------------------------------------------------
-
     if "balok" in t:
 
         result = civil_structural_member_calculation(
@@ -1946,10 +1341,6 @@ def civil_calculator(text):
 
         if result:
             return result
-
-    # --------------------------------------------------------
-    # PLAT
-    # --------------------------------------------------------
 
     if (
         "plat beton" in t
@@ -1963,10 +1354,6 @@ def civil_calculator(text):
 
         if result:
             return result
-
-    # --------------------------------------------------------
-    # PONDASI BATU KALI
-    # --------------------------------------------------------
 
     if (
         "pondasi batu kali" in t
@@ -2037,10 +1424,6 @@ Kondisi tanah, beban bangunan, kedalaman pondasi,
 dan dimensi aktual harus diperiksa untuk desain final.
 """.strip()
 
-    # --------------------------------------------------------
-    # DINDING
-    # --------------------------------------------------------
-
     if (
         "dinding" in t
         or "tembok" in t
@@ -2053,10 +1436,6 @@ dan dimensi aktual harus diperiksa untuk desain final.
         if result:
             return result
 
-    # --------------------------------------------------------
-    # PLESTER
-    # --------------------------------------------------------
-
     if "plester" in t:
 
         result = civil_plaster_calculation(text)
@@ -2064,20 +1443,12 @@ dan dimensi aktual harus diperiksa untuk desain final.
         if result:
             return result
 
-    # --------------------------------------------------------
-    # ACIAN
-    # --------------------------------------------------------
-
     if "acian" in t:
 
         result = civil_acian_calculation(text)
 
         if result:
             return result
-
-    # --------------------------------------------------------
-    # GALIAN
-    # --------------------------------------------------------
 
     if (
         "galian" in t
@@ -2093,10 +1464,6 @@ dan dimensi aktual harus diperiksa untuk desain final.
         if result:
             return result
 
-    # --------------------------------------------------------
-    # URUGAN
-    # --------------------------------------------------------
-
     if (
         "urugan" in t
         or "urug" in t
@@ -2110,10 +1477,6 @@ dan dimensi aktual harus diperiksa untuk desain final.
 
         if result:
             return result
-
-    # --------------------------------------------------------
-    # BETON / LANTAI
-    # --------------------------------------------------------
 
     concrete_keywords = [
         "beton",
@@ -2137,11 +1500,6 @@ dan dimensi aktual harus diperiksa untuk desain final.
             return result
 
     return None
-
-
-# ============================================================
-# TASK CLASSIFIER
-# ============================================================
 
 def classify_task(text):
 
@@ -2235,11 +1593,6 @@ def classify_task(text):
 
     return "general"
 
-
-# ============================================================
-# OPENROUTER
-# ============================================================
-
 def call_openrouter(uid, text, task, model=None):
 
     if not openrouter:
@@ -2282,11 +1635,6 @@ def call_openrouter(uid, text, task, model=None):
 
     return answer, selected_model
 
-
-# ============================================================
-# GEMINI
-# ============================================================
-
 def call_gemini(uid, text, task):
 
     if not gemini:
@@ -2295,41 +1643,13 @@ def call_gemini(uid, text, task):
         )
 
     task_hint = {
-
-        "coding":
-            "Berikan kode yang dapat dijalankan.",
-
-        "reasoning":
-            "Analisis masalah secara teliti sebelum kesimpulan.",
-
-        "technical":
-            "Gunakan pertimbangan teknik dan manufaktur yang praktis.",
-
-        "civil":
-            """
-Gunakan perhitungan sipil secara teliti.
-
-Jangan mengarang data.
-Jika data belum diberikan, nyatakan data belum ditentukan.
-
-Bedakan:
-estimasi material
-dengan
-desain struktur.
-
-Untuk struktur:
-jangan menyatakan aman tanpa perhitungan engineering.
-""",
-
-        "math":
-            "Hitung secara teliti dan tunjukkan asumsi.",
-
-        "creative":
-            "Buat hasil kreatif yang siap digunakan.",
-
-        "general":
-            "Jawab langsung dan jelas.",
-
+        "coding": "Berikan kode yang dapat dijalankan; prioritaskan sintaks, debugging, dan solusi praktis.",
+        "reasoning": "Analisis sistematis, periksa penyebab, dan validasi kesimpulan.",
+        "technical": "Prioritaskan ukuran, material, rangka, fabrikasi, cutting list, sambungan, efisiensi, dan asumsi teknik.",
+        "civil": "Hitung teliti; jangan mengarang data. Bedakan estimasi material dari desain struktur.",
+        "math": "Hitung teliti dan tampilkan asumsi penting.",
+        "creative": "Buat hasil kreatif yang siap digunakan.",
+        "general": "Jawab langsung, jelas, dan praktis.",
     }.get(task, "")
 
     prompt = (
@@ -2362,62 +1682,52 @@ jangan menyatakan aman tanpa perhitungan engineering.
 
     return answer, GEMINI_CHAT_MODEL
 
+def call_nvidia(uid, text, task):
 
-# ============================================================
-# NVIDIA
-# ============================================================
-
-def call_nvidia(uid, text, task, model=None):
-    if not nvidia:
-        raise RuntimeError("NVIDIA_API_KEY belum tersedia.")
-
-    model = model or NVIDIA_MODEL
-    r = nvidia.chat.completions.create(
-        model=model,
-        messages=build_messages(uid, text, task),
-        max_tokens=NVIDIA_MAX_OUTPUT_TOKENS,
-    )
-    answer = r.choices[0].message.content or ""
-    if not answer.strip():
-        raise RuntimeError("NVIDIA mengembalikan jawaban kosong.")
-    return answer, getattr(r, "model", None) or model
-
-
-# ============================================================
-# GROQ
-# ============================================================
-
-def call_groq(uid, text, task, model=None):
-
-    if not groq:
+    if not NVIDIA_KEY:
         raise RuntimeError(
-            "GROQ_API_KEY belum tersedia."
+            "NVIDIA_API_KEY belum tersedia."
         )
 
-    if not model:
+    task_hint = {
+        "coding": "Berikan kode yang dapat dijalankan dan jelaskan bagian pentingnya.",
+        "reasoning": "Analisis masalah secara teliti sebelum memberikan kesimpulan.",
+        "technical": "Gunakan pertimbangan teknik, manufaktur, material, dan praktik lapangan yang masuk akal.",
+        "civil": "Gunakan perhitungan sipil secara teliti. Bedakan estimasi material dari desain struktur dan jangan menyatakan struktur aman tanpa perhitungan engineering.",
+        "math": "Hitung dengan teliti dan tampilkan asumsi serta langkah perhitungan yang relevan.",
+        "creative": "Buat hasil kreatif yang siap digunakan.",
+        "general": "Jawab langsung, jelas, dan membantu.",
+    }.get(task, "Jawab langsung dan jelas.")
 
-        if task == "coding":
-            model = GROQ_CODING_MODEL
+    client = OpenAI(
+        api_key=NVIDIA_KEY,
+        base_url="https://integrate.api.nvidia.com/v1",
+    )
 
-        elif task in (
-            "reasoning",
-            "math",
-        ):
-            model = GROQ_REASONING_MODEL
+    messages = [
+        {
+            "role": "system",
+            "content": SYSTEM + "\n\n" + task_hint,
+        }
+    ]
 
-        else:
-            model = GROQ_FAST_MODEL
+    messages.extend(
+        {
+            "role": m["role"],
+            "content": m["content"],
+        }
+        for m in _trim_history_for_context(uid)
+    )
 
-    r = groq.chat.completions.create(
-        model=model,
-        messages=build_messages(
-            uid,
-            text,
-            task,
-            max_turns=GROQ_MAX_CONTEXT_TURNS,
-            max_chars_per_item=GROQ_MAX_CONTEXT_CHARS_PER_ITEM,
-        ),
-        max_tokens=GROQ_MAX_OUTPUT_TOKENS,
+    messages.append({
+        "role": "user",
+        "content": text,
+    })
+
+    r = client.chat.completions.create(
+        model=NVIDIA_MODEL,
+        messages=messages,
+        max_tokens=NVIDIA_MAX_OUTPUT_TOKENS,
     )
 
     answer = (
@@ -2427,17 +1737,20 @@ def call_groq(uid, text, task, model=None):
 
     if not answer.strip():
         raise RuntimeError(
-            f"Groq ({model}) mengembalikan jawaban kosong."
+            f"NVIDIA ({NVIDIA_MODEL}) mengembalikan jawaban kosong."
         )
 
-    return answer, model
+    selected_model = (
+        getattr(r, "model", None)
+        or NVIDIA_MODEL
+    )
 
+    return answer, selected_model
 
 def _is_retryable_rate_limit(error_text):
     """
-    True hanya untuk rate limit yang kemungkinan bersifat sesaat
-    (per-menit/per-request), BUKAN limit harian/kuota yang sudah
-    pasti habis (retry tidak akan membantu untuk itu, cuma buang waktu).
+    True untuk rate-limit yang kemungkinan bersifat sementara.
+    Error harian/kuota tetap tidak diulang agar segera pindah provider.
     """
 
     t = error_text.lower()
@@ -2450,7 +1763,6 @@ def _is_retryable_rate_limit(error_text):
 
     return False
 
-
 def _call_with_retry(fn, retries=1, base_delay=1.5):
 
     last_err = None
@@ -2458,7 +1770,6 @@ def _call_with_retry(fn, retries=1, base_delay=1.5):
     for attempt in range(retries + 1):
 
         try:
-
             return fn()
 
         except Exception as e:
@@ -2477,173 +1788,120 @@ def _call_with_retry(fn, retries=1, base_delay=1.5):
 
     raise last_err
 
-
-# ============================================================
-# SMART CHAT ROUTER
-# ============================================================
-
-def _provider_label(name):
-    return {
-        "gemini": "Gemini",
-        "nvidia": "NVIDIA DeepSeek V4 Flash",
-        "groq": "Groq",
-        "openrouter": "OpenRouter Free",
-    }.get(name, name)
-
-
-def _provider_available(name):
-    return {
-        "gemini": bool(gemini),
-        "nvidia": bool(nvidia),
-        "groq": bool(groq),
-        "openrouter": bool(openrouter),
-    }.get(name, False)
-
-
-def _transparent_error_reason(exc):
-    t = str(exc).lower()
-    if "401" in t or "unauthorized" in t or "invalid api key" in t:
-        return "AUTH"
-    if "403" in t or "forbidden" in t:
-        return "FORBIDDEN"
-    if "429" in t or "rate limit" in t or "quota" in t or "resource_exhausted" in t:
-        return "RATE LIMIT/QUOTA"
-    if "timeout" in t or "timed out" in t:
-        return "TIMEOUT"
-    if "model_not_found" in t or "model not found" in t or "does not exist" in t:
-        return "MODEL TIDAK TERSEDIA"
-    if "validation" in t or "422" in t:
-        return "VALIDATION"
-    return "ERROR"
-
-
-def _auto_provider_order(task):
-    # Gemini selalu PRIMARY. Tidak ada cooldown. Jika gagal pada request ini,
-    # langsung lanjut NVIDIA -> provider lain. Request berikutnya Gemini dicoba lagi.
-    groq_models = {
-        "coding": [GROQ_CODING_MODEL, GROQ_REASONING_MODEL, GROQ_FAST_MODEL],
-        "reasoning": [GROQ_REASONING_MODEL, GROQ_FAST_MODEL],
-        "math": [GROQ_REASONING_MODEL, GROQ_FAST_MODEL],
-        "technical": [GROQ_REASONING_MODEL, GROQ_FAST_MODEL],
-        "civil": [GROQ_REASONING_MODEL, GROQ_FAST_MODEL],
-        "creative": [GROQ_FAST_MODEL, GROQ_REASONING_MODEL],
-        "general": [GROQ_FAST_MODEL, GROQ_REASONING_MODEL],
-    }.get(task, [GROQ_FAST_MODEL, GROQ_REASONING_MODEL])
-    return [
-        ("gemini", GEMINI_CHAT_MODEL),
-        ("nvidia", NVIDIA_MODEL),
-        *[("groq", m) for m in groq_models],
-        ("openrouter", OPENROUTER_FREE_MODEL),
-        ("groq", GROQ_BACKUP_MODEL_1),
-        ("groq", GROQ_BACKUP_MODEL_2),
-        ("groq", GROQ_BACKUP_MODEL_3),
-        ("groq", GROQ_BACKUP_MODEL_4),
-        ("groq", GROQ_BACKUP_MODEL_5),
-        ("openrouter", OPENROUTER_BACKUP_MODEL),
-    ]
-
-
-def _manual_provider_order(mode, task):
-    cfg = MANUAL_AI_MODES.get(mode)
-    if not cfg:
-        return _auto_provider_order(task)
-    provider, model, _, _ = cfg
-    fallback = [x for x in _auto_provider_order(task) if x[0] != provider]
-    return [(provider, model)] + fallback
-
-
 def chat_router(uid, text):
-    started = time.perf_counter()
+
     task = classify_task(text)
 
+    log.info(
+        "TASK=%s | text=%s",
+        task,
+        text[:120],
+    )
+
     if task == "civil":
+
         civil_result = civil_calculator(text)
+
         if civil_result:
-            return civil_result, "Civil Calculator", "Local Calculation Engine", task, [
-                {"provider": "local", "model": "Local Calculation Engine", "status": "LOCAL"}
-            ]
+            return (
+                civil_result,
+                "Civil Calculator",
+                "Local Calculation Engine",
+                task,
+            )
 
-    mode = user_ai_mode.get(str(uid), "auto")
-    routes = _auto_provider_order(task) if mode == "auto" else _manual_provider_order(mode, task)
-    attempts = []
+    providers = [
+        (
+            "Gemini PRIMARY",
+            lambda: call_gemini(
+                uid,
+                text,
+                task,
+            ),
+        ),
+        (
+            "NVIDIA FALLBACK",
+            lambda: call_nvidia(
+                uid,
+                text,
+                task,
+            ),
+        ),
+        (
+            "OpenRouter FALLBACK",
+            lambda: call_openrouter(
+                uid,
+                text,
+                task,
+            ),
+        ),
+        (
+            "OpenRouter BACKUP",
+            lambda: call_openrouter(
+                uid,
+                text,
+                task,
+                model=OPENROUTER_BACKUP_MODEL,
+            ),
+        ),
+    ]
 
-    for provider_name, selected_model in routes:
-        if not _provider_available(provider_name):
-            attempts.append({
-                "provider": provider_name,
-                "model": selected_model,
-                "status": "SKIP",
-                "reason": "API TIDAK AKTIF",
-            })
-            continue
+    errors = []
+
+    for provider_name, fn in providers:
+
         try:
-            if provider_name == "gemini":
-                answer, model = call_gemini(uid, text, task)
-            elif provider_name == "nvidia":
-                answer, model = call_nvidia(uid, text, task, selected_model)
-            elif provider_name == "groq":
-                answer, model = call_groq(uid, text, task, selected_model)
-            else:
-                answer, model = call_openrouter(uid, text, task, selected_model)
+
+            log.info(
+                "TRY PROVIDER | task=%s | provider=%s",
+                task,
+                provider_name,
+            )
+
+            retry_count = 1 if provider_name == "Gemini PRIMARY" else 0
+
+            answer, model = _call_with_retry(
+                fn,
+                retries=retry_count,
+            )
 
             if not answer.strip():
-                raise RuntimeError("Provider mengembalikan jawaban kosong.")
+                raise RuntimeError(
+                    "Provider mengembalikan jawaban kosong."
+                )
 
-            attempts.append({
-                "provider": provider_name,
-                "model": model,
-                "status": "SUCCESS",
-            })
-            log.info("CHAT SUCCESS | task=%s | provider=%s | model=%s | elapsed=%.2f", task, provider_name, model, time.perf_counter()-started)
-            return answer, _provider_label(provider_name), model, task, attempts
+            log.info(
+                "CHAT SUCCESS | task=%s | provider=%s | model=%s",
+                task,
+                provider_name,
+                model,
+            )
+
+            return (
+                answer,
+                provider_name,
+                model,
+                task,
+            )
 
         except Exception as e:
-            reason = _transparent_error_reason(e)
-            attempts.append({
-                "provider": provider_name,
-                "model": selected_model,
-                "status": "FAILED",
-                "reason": reason,
-            })
-            log.warning("PROVIDER FAILED | %s | %s", provider_name, reason)
-            continue
 
-    detail = "\n".join(
-        f"• {_provider_label(a['provider'])}: {a.get('reason', a.get('status', 'UNKNOWN'))}"
-        for a in attempts
+            error_text = str(e)
+
+            errors.append(
+                f"{provider_name}: {error_text[:300]}"
+            )
+
+            log.warning(
+                "PROVIDER FAILED | provider=%s | error=%s",
+                provider_name,
+                error_text[:300],
+            )
+
+    raise RuntimeError(
+        "Semua provider AI gratis gagal. "
+        + " | ".join(errors)
     )
-    raise RuntimeError("Semua provider AI GRATIS gagal.\n" + detail)
-
-
-def format_transparent_response(answer, provider, model, task, routes, elapsed):
-    lines = []
-    for a in routes:
-        if a.get("status") == "FAILED":
-            lines.append(f"❌ {_provider_label(a['provider'])} | {a.get('model') or '-'} | FAILED — {a.get('reason', 'ERROR')}")
-        elif a.get("status") == "SKIP":
-            lines.append(f"⚪ {_provider_label(a['provider'])} | {a.get('model') or '-'} | SKIP — {a.get('reason', 'API TIDAK AKTIF')}")
-        elif a.get("status") == "SUCCESS":
-            lines.append(f"{'🤖' if a['provider'] == 'local' else '✅'} {_provider_label(a['provider'])} | {a.get('model') or '-'} | SUCCESS")
-        else:
-            lines.append(f"ℹ️ {_provider_label(a['provider'])} | {a.get('model') or '-'} | {a.get('status', 'UNKNOWN')}")
-    history = "\n".join(lines)
-    return (
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🤖 AI: {provider}\n"
-        f"🧠 Model: {model}\n"
-        f"📌 Task: {task}\n"
-        "✅ Status: SUCCESS\n"
-        f"⏱️ Waktu: {elapsed:.2f} detik\n"
-        "🔍 Riwayat routing:\n"
-        f"{history}\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        + answer
-    )
-
-
-# ============================================================
-# TELEGRAM API
-# ============================================================
 
 async def tg(method, data):
 
@@ -2674,11 +1932,6 @@ async def tg(method, data):
 
     return result
 
-
-# ============================================================
-# TELEGRAM FILE
-# ============================================================
-
 async def tg_file(file_id):
 
     result = await tg(
@@ -2703,11 +1956,6 @@ async def tg_file(file_id):
         r.raise_for_status()
 
     return r.content, path
-
-
-# ============================================================
-# TELEGRAM FORMATTER
-# ============================================================
 
 def clean_telegram_text(text):
 
@@ -2873,11 +2121,6 @@ def clean_telegram_text(text):
 
     return text.strip()
 
-
-# ============================================================
-# TELEGRAM CHUNK
-# ============================================================
-
 def split_telegram_message(
     text,
     max_length=3900,
@@ -2969,11 +2212,6 @@ def split_telegram_message(
 
     return chunks
 
-
-# ============================================================
-# SEND TEXT
-# ============================================================
-
 async def send_text(
     chat_id,
     text
@@ -3003,11 +2241,6 @@ async def send_text(
             await asyncio.sleep(
                 0.25
             )
-
-
-# ============================================================
-# SEND PHOTO
-# ============================================================
 
 async def send_photo(
     chat_id,
@@ -3040,11 +2273,6 @@ async def send_photo(
 
         r.raise_for_status()
 
-
-# ============================================================
-# SEND VIDEO
-# ============================================================
-
 async def send_video(
     chat_id,
     data
@@ -3073,11 +2301,6 @@ async def send_video(
         )
 
         r.raise_for_status()
-
-
-# ============================================================
-# GEMINI VISION
-# ============================================================
 
 def analyze_image(
     data,
@@ -3194,11 +2417,6 @@ def analyze_image(
         + " | ".join(errors)
     )
 
-
-# ============================================================
-# GEMINI VIDEO
-# ============================================================
-
 def analyze_video(
     data,
     mime,
@@ -3269,11 +2487,6 @@ def analyze_video(
 
     return result.text or ""
 
-
-# ============================================================
-# IMAGE GENERATION
-# ============================================================
-
 def pollinations_image(
     prompt
 ):
@@ -3330,7 +2543,6 @@ def pollinations_image(
 
         return r.content
 
-
 def _to_jpeg_bytes(raw: bytes) -> bytes:
     """
     Konversi bytes gambar apapun (PNG/WEBP/dll) menjadi JPEG.
@@ -3367,7 +2579,6 @@ def _to_jpeg_bytes(raw: bytes) -> bytes:
     except Exception:
 
         return raw
-
 
 def cloudflare_flux_image(
     prompt
@@ -3463,7 +2674,6 @@ def cloudflare_flux_image(
 
         return _to_jpeg_bytes(raw)
 
-
 def generate_image(
     prompt
 ):
@@ -3522,11 +2732,6 @@ def generate_image(
         + "\n".join(errors)
     )
 
-
-# ============================================================
-# COMMAND ARGUMENT
-# ============================================================
-
 def command_arg(text):
 
     parts = text.split(
@@ -3539,51 +2744,7 @@ def command_arg(text):
         else ""
     )
 
-
-# ============================================================
-# HANDLE TELEGRAM UPDATE
-# ============================================================
-
 async def handle(update):
-
-    callback = update.get("callback_query")
-    if callback:
-        callback_id = callback.get("id")
-        data = str(callback.get("data", ""))
-        from_user = callback.get("from") or {}
-        uid = str(from_user.get("id", ""))
-        chat_id = (callback.get("message") or {}).get("chat", {}).get("id")
-        if callback_id:
-            try:
-                await tg("answerCallbackQuery", {"callback_query_id": callback_id, "text": "⏳ Memproses pilihan..."})
-            except Exception:
-                pass
-
-        if data in {"conv_fast", "conv_agent"}:
-            mode = "fast" if data == "conv_fast" else "agent"
-            user_conversation_mode[uid] = mode
-            if mode == "fast":
-                memory[uid] = []
-                label = "⚡ FAST — memory OFF"
-            else:
-                try:
-                    await asyncio.wait_for(load_persistent_memory(uid), timeout=11.0)
-                    label = f"🧠 AGENT — GitHub memory ({len(history(uid))} item)"
-                except Exception as e:
-                    label = f"🧠 AGENT — GitHub memory (belum termuat: {type(e).__name__})"
-            if chat_id:
-                await send_text(chat_id, f"✅ Mode percakapan diubah ke: {label}")
-            return
-
-        if data.startswith("ai_"):
-            selected = data[3:]
-            if selected == "auto" or selected in MANUAL_AI_MODES:
-                user_ai_mode[uid] = selected
-                label = "🔄 AUTO" if selected == "auto" else MANUAL_AI_MODES[selected][3]
-                if chat_id:
-                    await send_text(chat_id, f"✅ Mode AI diubah ke: {label}\n\nJika AI pilihan gagal/limit, router tetap otomatis fallback ke provider GRATIS lain.")
-            return
-        return
 
     message = update.get(
         "message"
@@ -3619,10 +2780,6 @@ async def handle(update):
         )
         or ""
     )
-
-    # ========================================================
-    # START
-    # ========================================================
 
     if text.startswith(
         "/start"
@@ -3699,7 +2856,6 @@ urugan 10 x 5 x 0.2 meter
 
 Perintah:
 
-/mode
 /model
 /reset
 /gambar <prompt>
@@ -3716,35 +2872,6 @@ hasil material bukan pengganti desain engineer.
 
         return
 
-    # ========================================================
-    # CONVERSATION MODE: FAST / AGENT
-    # ========================================================
-
-    if text.strip().lower() == "/mode":
-        current = user_conversation_mode.get(uid, "fast")
-        label = "⚡ FAST — memory OFF" if current == "fast" else "🧠 AGENT — GitHub memory"
-        keyboard = {
-            "inline_keyboard": [
-                [{"text": "⚡ FAST — tanpa memory", "callback_data": "conv_fast"}],
-                [{"text": "🧠 AGENT — memory GitHub", "callback_data": "conv_agent"}],
-            ]
-        }
-        await tg("sendMessage", {
-            "chat_id": chat_id,
-            "text": clean_telegram_text(
-                f"🎛️ MODE PERCAKAPAN\n\nMode aktif: {label}\n\n"
-                "⚡ FAST = super cepat, tidak membaca atau menyimpan memory GitHub.\n"
-                "🧠 AGENT = membaca memory GitHub sebelum menjawab dan menyimpan memory setelah menjawab.\n\n"
-                "Pemilihan AI (/model) tetap terpisah dari mode percakapan."
-            ),
-            "reply_markup": keyboard,
-        })
-        return
-
-    # ========================================================
-    # RESET
-    # ========================================================
-
     if text.startswith(
         "/reset"
     ):
@@ -3755,8 +2882,7 @@ hasil material bukan pengganti desain engineer.
         )
 
         memory[uid] = []
-        if user_conversation_mode.get(uid, "fast") == "agent":
-            await save_persistent_memory(uid)
+        await save_persistent_memory(uid)
 
         await send_text(
             chat_id,
@@ -3765,57 +2891,74 @@ hasil material bukan pengganti desain engineer.
 
         return
 
-    # ========================================================
-    # MODEL
-    # ========================================================
-
     if text.startswith(
         "/model"
     ):
 
-        current_mode = user_ai_mode.get(uid, "auto")
-        current_conv = user_conversation_mode.get(uid, "fast")
-        keyboard = {
-            "inline_keyboard": [
-                [{"text": "🔄 AUTO", "callback_data": "ai_auto"}],
-                [{"text": "🟢 NVIDIA Fast", "callback_data": "ai_nvidia_fast"}, {"text": "💻 NVIDIA Coding", "callback_data": "ai_nvidia_coding"}],
-                [{"text": "🔧 NVIDIA Technical", "callback_data": "ai_nvidia_technical"}, {"text": "🧠 NVIDIA Reasoning", "callback_data": "ai_nvidia_reasoning"}],
-                [{"text": "⚡ Groq Fast", "callback_data": "ai_groq_fast"}, {"text": "💻 Groq Coding", "callback_data": "ai_groq_coding"}],
-                [{"text": "🧠 Groq Reasoning", "callback_data": "ai_groq_reasoning"}],
-                [{"text": "👁️ Gemini", "callback_data": "ai_gemini"}, {"text": "🌐 OpenRouter FREE", "callback_data": "ai_openrouter"}],
-            ]
-        }
-        ai_label = "🔄 AUTO" if current_mode == "auto" else MANUAL_AI_MODES.get(current_mode, (None,None,None,current_mode))[3]
-        status = (
-            f"🤖 MODE AI: {ai_label}\n"
-            f"🎛️ MODE PERCAKAPAN: {'⚡ FAST' if current_conv == 'fast' else '🧠 AGENT'}\n\n"
-            f"Gemini: {'✅ AKTIF' if gemini else '❌ TIDAK AKTIF'}\n"
-            f"NVIDIA: {'✅ AKTIF' if nvidia else '❌ TIDAK AKTIF'}\n"
-            f"Groq: {'✅ AKTIF' if groq else '❌ TIDAK AKTIF'}\n"
-            f"OpenRouter FREE: {'✅ AKTIF' if openrouter else '❌ TIDAK AKTIF'}\n\n"
-            "🔄 AUTO ROUTING:\n"
-            "Gemini PRIMARY → NVIDIA → Groq → OpenRouter → backup.\n"
-            "Gemini tidak memiliki cooldown 24 jam; jika gagal, request langsung fallback dan pada request berikutnya Gemini dicoba lagi.\n\n"
-            f"Gemini: {GEMINI_CHAT_MODEL}\n"
-            f"NVIDIA: {NVIDIA_MODEL}\n"
-            f"Groq Coding: {GROQ_CODING_MODEL}\n"
-            f"Groq Reasoning: {GROQ_REASONING_MODEL}\n"
-            f"Groq Fast: {GROQ_FAST_MODEL}\n"
-            f"OpenRouter: {OPENROUTER_FREE_MODEL}\n\n"
-            "💰 PAID MODEL ROUTING: DISABLED"
+        await send_text(
+            chat_id,
+            f"""
+🤖 STATUS SUPER AI AGENT
+
+Gemini:
+{'✅ AKTIF' if gemini else '❌ TIDAK AKTIF'}
+
+NVIDIA FREE:
+{'✅ AKTIF' if NVIDIA_KEY else '❌ TIDAK AKTIF'}
+
+OpenRouter FREE:
+{'✅ AKTIF' if openrouter else '❌ TIDAK AKTIF'}
+
+🏗️ CIVIL CALCULATOR
+
+✅ ACTIVE
+Local Calculation Engine
+
+Kemampuan:
+
+• Beton
+• Sloof
+• Kolom
+• Balok
+• Plat beton
+• Footplat
+• Pondasi
+• Batu kali
+• Dinding bata
+• Batako
+• Plester
+• Acian
+• Galian
+• Urugan
+• Besi
+• Berat besi
+• Jumlah batang besi
+
+🎨 GENERATE GAMBAR
+
+Cloudflare Flux:
+{'✅ AKTIF' if CLOUDFLARE_ENABLED else '❌ TIDAK AKTIF'}
+
+Pollinations (fallback):
+{'✅ AKTIF' if POLLINATIONS_ENABLED else '❌ TIDAK AKTIF'}
+
+🧠 MODEL
+
+Gemini:
+{GEMINI_CHAT_MODEL}
+
+NVIDIA:
+{NVIDIA_MODEL}
+
+OpenRouter:
+{OPENROUTER_FREE_MODEL}
+
+💰 PAID MODEL ROUTING
+DISABLED
+""",
         )
-        await tg("sendMessage", {
-            "chat_id": chat_id,
-            "text": clean_telegram_text(status),
-            "reply_markup": keyboard,
-        })
-        return
 
         return
-
-    # ========================================================
-    # GAMBAR
-    # ========================================================
 
     if text.startswith(
         "/gambar"
@@ -3891,10 +3034,6 @@ Contoh:
 
         return
 
-    # ========================================================
-    # VIDEO
-    # ========================================================
-
     if message.get(
         "video"
     ):
@@ -3935,21 +3074,7 @@ Contoh:
                     data,
                     mime,
                     caption or
-                    """
-Analisa video ini secara detail.
-
-Jika terkait pekerjaan manufaktur,
-bengkel, konstruksi, sipil, tenda,
-kanopi, atau fabrikasi:
-
-- jelaskan objek
-- jelaskan proses
-- jelaskan kondisi
-- jelaskan masalah
-- berikan saran praktis
-
-Jangan mengarang ukuran yang tidak terlihat.
-""",
+                    "Analisa video ini. Jelaskan objek, proses, kondisi/masalah, dan saran praktis bila terkait manufaktur, bengkel, konstruksi, sipil, tenda, kanopi, atau fabrikasi. Jangan mengarang ukuran yang tidak terlihat.",
                 )
             )
 
@@ -3971,10 +3096,6 @@ Jangan mengarang ukuran yang tidak terlihat.
             )
 
         return
-
-    # ========================================================
-    # UPLOAD HASIL PEKERJAAN (foto + caption "/pekerjaan <kategori> <lokasi>")
-    # ========================================================
 
     if message.get("photo") and caption.strip().lower().startswith("/pekerjaan"):
 
@@ -4025,10 +3146,6 @@ Jangan mengarang ukuran yang tidak terlihat.
 
         return
 
-    # ========================================================
-    # PHOTO
-    # ========================================================
-
     if message.get(
         "photo"
     ):
@@ -4051,22 +3168,7 @@ Jangan mengarang ukuran yang tidak terlihat.
                 or "image/jpeg"
             )
 
-            prompt = caption or """
-Analisa gambar ini secara detail.
-
-Jika terkait manufaktur, bengkel las,
-tenda, pagar, fabrikasi, konstruksi,
-sipil, atau produk custom:
-
-- jelaskan objek
-- jelaskan komponen
-- jelaskan fungsi
-- jelaskan kondisi
-- jelaskan masalah
-- berikan saran praktis
-
-Jangan mengarang ukuran yang tidak terlihat.
-"""
+            prompt = caption or "Analisa gambar ini. Jelaskan objek, komponen, fungsi, kondisi/masalah, dan saran praktis bila terkait manufaktur, bengkel las, tenda, pagar, fabrikasi, konstruksi, atau sipil. Jangan mengarang ukuran yang tidak terlihat."
 
             answer, model = (
                 await asyncio.to_thread(
@@ -4101,18 +3203,12 @@ Jangan mengarang ukuran yang tidak terlihat.
 
         return
 
-    # ========================================================
-    # NORMAL CHAT
-    # ========================================================
-
     if not text:
         return
 
     try:
 
-        conv_mode = user_conversation_mode.get(uid, "fast")
-        if conv_mode == "agent":
-            await load_persistent_memory(uid)
+        await load_persistent_memory(uid)
 
         await tg(
             "sendChatAction",
@@ -4122,29 +3218,35 @@ Jangan mengarang ukuran yang tidak terlihat.
             },
         )
 
-        started = time.perf_counter()
         (
             answer,
             provider,
             model,
             task,
-            routes,
         ) = await asyncio.to_thread(
             chat_router,
             uid,
             text,
         )
-        elapsed = time.perf_counter() - started
 
-        if conv_mode == "agent":
-            remember(uid, "user", text)
-            remember(uid, "assistant", answer)
-            await save_persistent_memory(uid)
-
-        response = format_transparent_response(
-            answer, provider, model, task, routes, elapsed
+        remember(
+            uid,
+            "user",
+            text,
         )
-        await send_text(chat_id, response)
+
+        remember(
+            uid,
+            "assistant",
+            answer,
+        )
+
+        await save_persistent_memory(uid)
+
+        await send_text(
+            chat_id,
+            answer,
+        )
 
         log.info(
             "CHAT DONE | task=%s | provider=%s | model=%s",
@@ -4164,11 +3266,6 @@ Jangan mengarang ukuran yang tidak terlihat.
             "❌ Semua AI GRATIS gagal untuk request ini.\n\n"
             + str(e)[:700],
         )
-
-
-# ============================================================
-# ROOT
-# ============================================================
 
 @app.get("/")
 async def root():
@@ -4192,11 +3289,11 @@ async def root():
             "gemini":
                 bool(gemini),
 
+            "nvidia_free":
+                bool(NVIDIA_KEY),
+
             "openrouter_free":
                 bool(openrouter),
-
-            "groq_free_tier":
-                bool(groq),
 
             "cloudflare_flux":
                 CLOUDFLARE_ENABLED,
@@ -4229,17 +3326,11 @@ async def root():
             "gemini":
                 GEMINI_CHAT_MODEL,
 
+            "nvidia":
+                NVIDIA_MODEL,
+
             "openrouter":
                 OPENROUTER_FREE_MODEL,
-
-            "groq_coding":
-                GROQ_CODING_MODEL,
-
-            "groq_reasoning":
-                GROQ_REASONING_MODEL,
-
-            "groq_fast":
-                GROQ_FAST_MODEL,
 
             "cloudflare_image":
                 CLOUDFLARE_IMAGE_MODEL,
@@ -4247,20 +3338,10 @@ async def root():
         },
     }
 
-
-# ============================================================
-# API
-# ============================================================
-
 @app.get("/api")
 async def api_root():
 
     return await root()
-
-
-# ============================================================
-# WEBHOOK IMPLEMENTATION
-# ============================================================
 
 async def webhook_impl(
     request: Request,
@@ -4290,11 +3371,6 @@ async def webhook_impl(
         "ok": True
     }
 
-
-# ============================================================
-# TELEGRAM WEBHOOK
-# ============================================================
-
 @app.post(
     "/api/webhook"
 )
@@ -4310,11 +3386,6 @@ async def webhook(
         request,
         x_telegram_bot_api_secret_token,
     )
-
-
-# ============================================================
-# LEGACY ROOT WEBHOOK
-# ============================================================
 
 @app.post("/")
 async def root_post(
