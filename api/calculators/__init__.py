@@ -1,1 +1,1 @@
-"""DesignManufaktur optional calculators."""
+"""Optional calculator modules."""
