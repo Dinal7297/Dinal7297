@@ -9,7 +9,6 @@ import re
 import math
 import json
 from typing import Optional
-from collections import defaultdict
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -449,30 +448,7 @@ nvidia = (
 # ============================================================
 
 memory = {}
-MAX_MEMORY = 20
-
-# ============================================================
-# DUAL MODE: FAST vs AGENT
-# ============================================================
-# FAST  = tanpa memory/context persisten, paling ringan/cepat.
-# AGENT = memory + konteks pekerjaan + penyimpanan GitHub.
-CONVERSATION_MODE_FAST = "fast"
-CONVERSATION_MODE_AGENT = "agent"
-CONVERSATION_MODE_LABELS = {
-    CONVERSATION_MODE_FAST: "⚡ AI BIASA / FAST",
-    CONVERSATION_MODE_AGENT: "🧠 AI AGENT",
-}
-user_conversation_mode = {}
-
-# Penyimpanan memory jangka panjang dipisahkan dari history.
-long_term_memory = {}
-MAX_LONG_TERM_MEMORY = 100
-
-# Proteksi duplicate update dan race-condition per user.
-PROCESSED_UPDATE_TTL = 900
-_processed_updates = {}
-_processed_updates_lock = asyncio.Lock()
-_user_locks = defaultdict(asyncio.Lock)
+MAX_MEMORY = 100
 
 # ============================================================
 # PEMILIHAN AI MANUAL + TRANSPARANSI (BARU — ADITIF)
@@ -524,49 +500,34 @@ AI_MODE_LABELS = {
 # uid(str) -> salah satu key di AI_MODE_LABELS
 user_ai_mode = {}
 
+# ============================================================
+# CHAT MODE: FAST vs AGENT
+# ============================================================
+CHAT_MODE_FAST = "fast"
+CHAT_MODE_AGENT = "agent"
+CHAT_MODE_LABELS = {
+    CHAT_MODE_FAST: "⚡ AI BIASA / FAST",
+    CHAT_MODE_AGENT: "🧠 AI AGENT / MEMORY",
+}
+user_chat_mode = {}
 
-def get_conversation_mode(uid):
-    return user_conversation_mode.get(str(uid), CONVERSATION_MODE_FAST)
+def get_chat_mode(uid):
+    return user_chat_mode.get(str(uid), CHAT_MODE_FAST)
 
+def set_chat_mode(uid, mode):
+    if mode in CHAT_MODE_LABELS:
+        user_chat_mode[str(uid)] = mode
 
-def set_conversation_mode(uid, mode):
-    if mode in CONVERSATION_MODE_LABELS:
-        user_conversation_mode[str(uid)] = mode
-
-
-def build_conversation_mode_keyboard():
+def build_chat_mode_keyboard():
+    mode = get_chat_mode("__preview__")
     return {
         "inline_keyboard": [
             [
-                {"text": "⚡ AI BIASA / FAST", "callback_data": "convmode:fast"},
-                {"text": "🧠 AI AGENT", "callback_data": "convmode:agent"},
-            ],
-            [
-                {"text": "⚙️ Pilih AI / Model", "callback_data": "showaimode"},
+                {"text": "⚡ AI BIASA / FAST", "callback_data": "chatmode:fast"},
+                {"text": "🧠 AI AGENT", "callback_data": "chatmode:agent"},
             ],
         ]
     }
-
-
-async def _mark_update_if_new(update_id):
-    """True jika update belum pernah diproses pada instance ini."""
-    if update_id is None:
-        return True
-    now = time.time()
-    async with _processed_updates_lock:
-        expired = [k for k, t in _processed_updates.items() if now - t > PROCESSED_UPDATE_TTL]
-        for k in expired:
-            _processed_updates.pop(k, None)
-        key = str(update_id)
-        if key in _processed_updates:
-            return False
-        _processed_updates[key] = now
-        # Batasi ukuran cache agar tidak membesar pada instance lama.
-        if len(_processed_updates) > 2000:
-            oldest = sorted(_processed_updates.items(), key=lambda x: x[1])[:500]
-            for k, _ in oldest:
-                _processed_updates.pop(k, None)
-        return True
 
 
 def get_ai_mode(uid):
@@ -603,7 +564,6 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_REPO = os.getenv("GITHUB_REPO", "Dinal7297/designmanufaktur-memory")
 GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main")
 GITHUB_MEMORY_DIR = "memory"
-GITHUB_ARCHIVE_DIR = "conversations"
 GITHUB_API = "https://api.github.com"
 
 # ============================================================
@@ -635,45 +595,52 @@ OPENROUTER_MAX_OUTPUT_TOKENS = 2048
 
 
 def history(uid):
-    return memory.setdefault(str(uid), [])
+    return memory.setdefault(uid, [])
 
 
 def remember(uid, role, content):
-    uid = str(uid)
+
     history(uid).append({
         "role": role,
         "content": content,
-        "timestamp": int(time.time()),
     })
+
     memory[uid] = history(uid)[-MAX_MEMORY:]
 
 
-def remember_long_term(uid, content, category="context"):
-    """Simpan fakta/context penting tanpa membatasi history percakapan."""
-    uid = str(uid)
-    item = {
-        "content": str(content).strip(),
-        "category": category,
-        "timestamp": int(time.time()),
-    }
-    if not item["content"]:
-        return
-    items = long_term_memory.setdefault(uid, [])
-    # Hindari duplikat persis.
-    if any(x.get("content") == item["content"] for x in items):
-        return
-    items.append(item)
-    long_term_memory[uid] = items[-MAX_LONG_TERM_MEMORY:]
+def _trim_history_for_context(
+    uid,
+    max_turns=MAX_CONTEXT_TURNS,
+    max_chars_per_item=MAX_CONTEXT_CHARS_PER_ITEM,
+):
+    """
+    Ambil riwayat terbaru saja (max_turns item terakhir),
+    dan potong setiap item yang terlalu panjang.
+    Tujuan: hemat token supaya tidak kena limit provider gratis.
+    Tidak mengubah data yang tersimpan di memory[] / GitHub,
+    hanya mempengaruhi apa yang dikirim ke LLM saat itu.
+    """
 
-
-def _trim_history_for_context(uid, max_turns=MAX_CONTEXT_TURNS, max_chars_per_item=MAX_CONTEXT_CHARS_PER_ITEM):
     items = history(uid)[-max_turns:]
+
     trimmed = []
+
     for m in items:
+
         content = m.get("content", "") or ""
+
         if len(content) > max_chars_per_item:
-            content = content[:max_chars_per_item] + "\n...(riwayat dipotong untuk hemat token)"
-        trimmed.append({"role": m.get("role", "user"), "content": content})
+
+            content = (
+                content[:max_chars_per_item]
+                + "\n...(riwayat dipotong untuk hemat token)"
+            )
+
+        trimmed.append({
+            "role": m.get("role", "user"),
+            "content": content,
+        })
+
     return trimmed
 
 
@@ -681,15 +648,10 @@ def _memory_path(uid):
     return f"{GITHUB_MEMORY_DIR}/{str(uid)}.json"
 
 
-def _archive_path(uid):
-    return f"{GITHUB_ARCHIVE_DIR}/{str(uid)}.jsonl"
-
-
 async def load_persistent_memory(uid):
     uid = str(uid)
     if not GITHUB_TOKEN or not GITHUB_REPO:
         memory.setdefault(uid, [])
-        long_term_memory.setdefault(uid, [])
         return
     url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
@@ -698,29 +660,29 @@ async def load_persistent_memory(uid):
             response = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
         if response.status_code == 404:
             memory[uid] = []
-            long_term_memory[uid] = []
             return
         response.raise_for_status()
         encoded = response.json().get("content", "")
-        raw = base64.b64decode(encoded.replace("\n", "")).decode("utf-8") if encoded else "{}"
+        if not encoded:
+            memory[uid] = []
+            return
+        raw = base64.b64decode(encoded.replace("\n", "")).decode("utf-8")
         saved = json.loads(raw)
-        if not isinstance(saved, dict):
-            saved = {"memory": saved if isinstance(saved, list) else []}
-        saved_mode = saved.get("ai_mode")
-        if saved_mode in AI_MODE_LABELS:
-            user_ai_mode[uid] = saved_mode
-        conv_mode = saved.get("conversation_mode")
-        if conv_mode in CONVERSATION_MODE_LABELS:
-            user_conversation_mode[uid] = conv_mode
-        hist = saved.get("memory", [])
-        ltm = saved.get("long_term_memory", [])
-        memory[uid] = hist[-MAX_MEMORY:] if isinstance(hist, list) else []
-        long_term_memory[uid] = ltm[-MAX_LONG_TERM_MEMORY:] if isinstance(ltm, list) else []
-        log.info("PERSISTENT MEMORY LOAD OK | uid=%s | history=%s | long_term=%s | mode=%s", uid, len(memory[uid]), len(long_term_memory[uid]), get_conversation_mode(uid))
+        if isinstance(saved, dict):
+            saved_mode = saved.get("ai_mode")
+            if saved_mode in AI_MODE_LABELS:
+                user_ai_mode[uid] = saved_mode
+            saved_chat_mode = saved.get("chat_mode")
+            if saved_chat_mode in CHAT_MODE_LABELS:
+                user_chat_mode[uid] = saved_chat_mode
+            saved = saved.get("memory", [])
+        if not isinstance(saved, list):
+            saved = []
+        memory[uid] = saved[-MAX_MEMORY:]
+        log.info("PERSISTENT MEMORY LOAD OK | uid=%s | items=%s", uid, len(memory[uid]))
     except Exception as e:
         log.warning("PERSISTENT MEMORY LOAD FAILED | uid=%s | %s", uid, str(e)[:300])
         memory.setdefault(uid, [])
-        long_term_memory.setdefault(uid, [])
 
 
 async def save_persistent_memory(uid):
@@ -728,14 +690,7 @@ async def save_persistent_memory(uid):
     if not GITHUB_TOKEN or not GITHUB_REPO:
         log.warning("PERSISTENT MEMORY SAVE SKIPPED | GITHUB_TOKEN/GITHUB_REPO belum tersedia")
         return
-    raw = json.dumps({
-        "user_id": uid,
-        "memory": history(uid)[-MAX_MEMORY:],
-        "long_term_memory": long_term_memory.get(uid, [])[-MAX_LONG_TERM_MEMORY:],
-        "ai_mode": get_ai_mode(uid),
-        "conversation_mode": get_conversation_mode(uid),
-        "updated_at": int(time.time()),
-    }, ensure_ascii=False, indent=2)
+    raw = json.dumps({"user_id": uid, "memory": history(uid)[-MAX_MEMORY:], "ai_mode": get_ai_mode(uid), "chat_mode": get_chat_mode(uid), "updated_at": int(time.time())}, ensure_ascii=False, indent=2)
     encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
     url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
@@ -753,40 +708,6 @@ async def save_persistent_memory(uid):
         log.info("PERSISTENT MEMORY SAVE OK | uid=%s", uid)
     except Exception as e:
         log.warning("PERSISTENT MEMORY SAVE FAILED | uid=%s | %s", uid, str(e)[:300])
-
-
-async def archive_agent_message(uid, role, content):
-    """Arsip seluruh percakapan Agent secara append-only di GitHub."""
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        return
-    uid = str(uid)
-    # Untuk mencegah commit terlalu banyak, arsip digabung ke file JSONL.
-    path = _archive_path(uid)
-    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{path}"
-    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            current = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
-            existing = ""
-            sha = None
-            if current.status_code == 200:
-                data = current.json()
-                sha = data.get("sha")
-                encoded = data.get("content", "")
-                if encoded:
-                    existing = base64.b64decode(encoded.replace("\n", "")).decode("utf-8")
-            elif current.status_code != 404:
-                current.raise_for_status()
-            line = json.dumps({"timestamp": int(time.time()), "role": role, "content": str(content)}, ensure_ascii=False)
-            new_content = existing + ("\n" if existing and not existing.endswith("\n") else "") + line + "\n"
-            body = {"message": f"conversation: {uid}", "content": base64.b64encode(new_content.encode("utf-8")).decode("ascii"), "branch": GITHUB_BRANCH}
-            if sha:
-                body["sha"] = sha
-            result = await client.put(url, headers=headers, json=body)
-            if result.status_code not in (200, 201):
-                result.raise_for_status()
-    except Exception as e:
-        log.warning("CONVERSATION ARCHIVE FAILED | uid=%s | %s", uid, str(e)[:300])
 
 
 # ============================================================
@@ -960,7 +881,7 @@ def build_messages(
     task,
     max_turns=MAX_CONTEXT_TURNS,
     max_chars_per_item=MAX_CONTEXT_CHARS_PER_ITEM,
-    conversation_mode=CONVERSATION_MODE_AGENT,
+    use_memory=True,
 ):
 
     task_hint = {
@@ -1055,18 +976,21 @@ Jawab langsung, jelas, dan berguna.
 
     }.get(task, "")
 
-    system_content = SYSTEM + "\n\n" + task_hint
-    if conversation_mode == CONVERSATION_MODE_AGENT:
-        ltm = long_term_memory.get(str(uid), [])
-        if ltm:
-            system_content += "\n\nMEMORI JANGKA PANJANG PENGGUNA:\n" + "\n".join(
-                f"• [{x.get('category', 'context')}] {x.get('content', '')}"
-                for x in ltm[-MAX_LONG_TERM_MEMORY:]
-            )
-        context = _trim_history_for_context(uid, max_turns, max_chars_per_item)
-    else:
-        context = []
-    return [{"role": "system", "content": system_content}] + context + [{"role": "user", "content": text}]
+    return [
+        {
+            "role": "system",
+            "content": SYSTEM + "\n\n" + task_hint,
+        }
+    ] + (_trim_history_for_context(
+        uid,
+        max_turns,
+        max_chars_per_item,
+    ) if use_memory else []) + [
+        {
+            "role": "user",
+            "content": text,
+        }
+    ]
 
 
 # ============================================================
@@ -2375,7 +2299,7 @@ def classify_task(text):
 # OPENROUTER
 # ============================================================
 
-def call_openrouter(uid, text, task, model=None, conversation_mode=CONVERSATION_MODE_AGENT):
+def call_openrouter(uid, text, task, model=None, use_memory=True):
 
     if not openrouter:
         raise RuntimeError(
@@ -2390,7 +2314,7 @@ def call_openrouter(uid, text, task, model=None, conversation_mode=CONVERSATION_
             uid,
             text,
             task,
-            conversation_mode=conversation_mode,
+            use_memory=use_memory,
         ),
         max_tokens=OPENROUTER_MAX_OUTPUT_TOKENS,
         extra_headers={
@@ -2423,7 +2347,7 @@ def call_openrouter(uid, text, task, model=None, conversation_mode=CONVERSATION_
 # GEMINI
 # ============================================================
 
-def call_gemini(uid, text, task, conversation_mode=CONVERSATION_MODE_AGENT):
+def call_gemini(uid, text, task, use_memory=True):
 
     if not gemini:
         raise RuntimeError(
@@ -2475,13 +2399,12 @@ jangan menyatakan aman tanpa perhitungan engineering.
         + "\n\n"
     )
 
-    if conversation_mode == CONVERSATION_MODE_AGENT:
-        ltm = long_term_memory.get(str(uid), [])
-        if ltm:
-            prompt += "\nMEMORI JANGKA PANJANG:\n"
-            prompt += "\n".join(f"- {x.get('content', '')}" for x in ltm[-MAX_LONG_TERM_MEMORY:]) + "\n"
-        for m in _trim_history_for_context(uid):
-            prompt += f"{m['role']}: {m['content']}\n"
+    for m in (_trim_history_for_context(uid) if use_memory else []):
+
+        prompt += (
+            f"{m['role']}: "
+            f"{m['content']}\n"
+        )
 
     prompt += f"user: {text}"
 
@@ -2504,7 +2427,7 @@ jangan menyatakan aman tanpa perhitungan engineering.
 # NVIDIA
 # ============================================================
 
-def call_nvidia(uid, text, task, model=None, conversation_mode=CONVERSATION_MODE_AGENT):
+def call_nvidia(uid, text, task, model=None, use_memory=True):
 
     if not nvidia:
         raise RuntimeError(
@@ -2521,7 +2444,7 @@ def call_nvidia(uid, text, task, model=None, conversation_mode=CONVERSATION_MODE
             task,
             max_turns=NVIDIA_MAX_CONTEXT_TURNS,
             max_chars_per_item=NVIDIA_MAX_CONTEXT_CHARS_PER_ITEM,
-            conversation_mode=conversation_mode,
+            use_memory=use_memory,
         ),
         max_tokens=NVIDIA_MAX_OUTPUT_TOKENS,
         temperature=1,
@@ -2595,7 +2518,7 @@ def _call_with_retry(fn, retries=1, base_delay=1.5):
 # SMART CHAT ROUTER
 # ============================================================
 
-def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_AGENT):
+def chat_router(uid, text, ai_mode="auto", use_memory=True):
 
     start_time = time.time()
 
@@ -2643,7 +2566,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     uid,
                     text,
                     task,
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
             (
@@ -2652,7 +2575,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     uid,
                     text,
                     task,
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
             (
@@ -2662,7 +2585,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     text,
                     task,
                     model=OPENROUTER_BACKUP_MODEL,
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
             (
@@ -2671,7 +2594,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     uid,
                     text,
                     task,
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
         ]
@@ -2685,7 +2608,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     uid,
                     text,
                     "coding",
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
             (
@@ -2694,7 +2617,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     uid,
                     text,
                     task,
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
             (
@@ -2704,7 +2627,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     text,
                     task,
                     model=OPENROUTER_BACKUP_MODEL,
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
             (
@@ -2713,7 +2636,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     uid,
                     text,
                     task,
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
         ]
@@ -2730,7 +2653,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     uid,
                     text,
                     "reasoning",
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
             (
@@ -2739,7 +2662,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     uid,
                     text,
                     task,
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
             (
@@ -2749,7 +2672,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     text,
                     task,
                     model=OPENROUTER_BACKUP_MODEL,
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
             (
@@ -2758,7 +2681,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     uid,
                     text,
                     task,
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
         ]
@@ -2773,7 +2696,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     uid,
                     text,
                     task,
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
             (
@@ -2782,7 +2705,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     uid,
                     text,
                     task,
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
             (
@@ -2792,7 +2715,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     text,
                     task,
                     model=OPENROUTER_BACKUP_MODEL,
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
             (
@@ -2801,7 +2724,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     uid,
                     text,
                     task,
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
         ]
@@ -2822,7 +2745,7 @@ def chat_router(uid, text, ai_mode="auto", conversation_mode=CONVERSATION_MODE_A
                     uid,
                     text,
                     forced_task,
-                    conversation_mode=conversation_mode,
+                    use_memory=use_memory,
                 ),
             ),
         ]
@@ -3934,130 +3857,215 @@ def command_arg(text):
 
 
 # ============================================================
-# TELEGRAM COMMAND MENU
+# TELEGRAM UPDATE DEDUPLICATION (PERSISTENT / ATOMIC)
 # ============================================================
+# Satu file per update_id dibuat di GitHub. GitHub Contents API akan
+# menerima pembuatan pertama dan menolak pembuatan berikutnya ketika
+# update yang sama masuk lagi (retry Telegram / instance Vercel lain).
+# Ini mencegah jawaban AI terkirim berulang.
 
-TELEGRAM_COMMANDS = [
-    {"command": "start", "description": "🚀 Menu utama"},
-    {"command": "mode", "description": "⚡ FAST / 🧠 AGENT"},
-    {"command": "model", "description": "🤖 Pilih AI / model"},
-    {"command": "ai", "description": "🧠 Atur provider AI"},
-    {"command": "ingat", "description": "💾 Simpan memory Agent"},
-    {"command": "reset", "description": "🔄 Reset riwayat sesi"},
-    {"command": "gambar", "description": "🎨 Buat gambar"},
-    {"command": "pekerjaan", "description": "📸 Simpan hasil pekerjaan"},
-]
+_local_claimed_updates = set()
 
-_commands_registered = False
-_commands_lock = asyncio.Lock()
-
-
-async def register_telegram_commands(force=False):
-    global _commands_registered
-    if _commands_registered and not force:
+async def claim_telegram_update(update_id):
+    """Return True hanya untuk pemrosesan pertama sebuah update_id."""
+    if update_id is None:
         return True
-    if not TELEGRAM_TOKEN:
+    key = str(update_id)
+    if key in _local_claimed_updates:
         return False
-    async with _commands_lock:
-        if _commands_registered and not force:
-            return True
-        try:
-            result = await tg(
-                "setMyCommands",
-                {"commands": TELEGRAM_COMMANDS},
-            )
-            if isinstance(result, dict) and result.get("ok") is False:
-                log.warning("SET COMMANDS FAILED | %s", result)
-                return False
-            _commands_registered = True
-            log.info("TELEGRAM COMMAND MENU REGISTERED")
-            return True
-        except Exception as e:
-            log.warning("SET COMMANDS FAILED | %s", str(e)[:300])
-            return False
 
+    # Persistent claim bila GitHub memory tersedia.
+    if GITHUB_TOKEN and GITHUB_REPO:
+        path = f"system/telegram_updates/{key}.json"
+        url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{path}"
+        headers = {
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        payload = {
+            "message": f"system: claim telegram update {key}",
+            "content": base64.b64encode(json.dumps({"update_id": update_id, "claimed_at": int(time.time())}).encode()).decode(),
+            "branch": GITHUB_BRANCH,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                get_r = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
+                if get_r.status_code == 200:
+                    _local_claimed_updates.add(key)
+                    return False
+                if get_r.status_code not in (404,):
+                    get_r.raise_for_status()
+                put_r = await client.put(url, headers=headers, json=payload)
+                if put_r.status_code in (200, 201):
+                    _local_claimed_updates.add(key)
+                    return True
+                # Concurrent request likely created the file first. Confirm.
+                if put_r.status_code in (409, 422):
+                    confirm = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
+                    if confirm.status_code == 200:
+                        _local_claimed_updates.add(key)
+                        return False
+                log.warning("UPDATE CLAIM FAILED | update_id=%s | status=%s", update_id, put_r.status_code)
+                # Fail-open only for infrastructure failure so messages are not silently lost.
+        except Exception as e:
+            log.warning("UPDATE CLAIM ERROR | update_id=%s | %s", update_id, str(e)[:250])
+
+    _local_claimed_updates.add(key)
+    # Keep RAM cache bounded. Persistent GitHub claims remain permanent.
+    if len(_local_claimed_updates) > 5000:
+        _local_claimed_updates.clear()
+        _local_claimed_updates.add(key)
+    return True
+
+async def release_telegram_update(update_id):
+    """Hapus claim jika pemrosesan benar-benar gagal sebelum selesai."""
+    if update_id is None:
+        return
+    key = str(update_id)
+    _local_claimed_updates.discard(key)
+    if not (GITHUB_TOKEN and GITHUB_REPO):
+        return
+    path = f"system/telegram_updates/{key}.json"
+    url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{path}"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
+            if r.status_code != 200:
+                return
+            sha = r.json().get("sha")
+            await client.delete(
+                url,
+                headers=headers,
+                params={"branch": GITHUB_BRANCH},
+                json={"message": f"system: release failed update {key}", "sha": sha, "branch": GITHUB_BRANCH},
+            )
+    except Exception as e:
+        log.warning("UPDATE RELEASE FAILED | update_id=%s | %s", update_id, str(e)[:250])
+
+async def set_bot_commands():
+    commands = [
+        {"command": "start", "description": "🚀 Menu utama"},
+        {"command": "mode", "description": "⚡ FAST / 🧠 AGENT"},
+        {"command": "model", "description": "🤖 Pilih AI / model"},
+        {"command": "ai", "description": "🧠 Atur provider AI"},
+        {"command": "ingat", "description": "💾 Simpan memory Agent"},
+        {"command": "reset", "description": "🔄 Reset riwayat sesi"},
+        {"command": "gambar", "description": "🎨 Buat gambar"},
+        {"command": "pekerjaan", "description": "📸 Simpan hasil pekerjaan"},
+    ]
+    try:
+        await tg("setMyCommands", {"commands": commands})
+    except Exception as e:
+        log.warning("setMyCommands gagal: %s", str(e)[:250])
 
 # ============================================================
 # HANDLE CALLBACK QUERY (tombol inline /model)
 # ============================================================
 
 async def handle_callback_query(callback_query):
+
     data = callback_query.get("data", "") or ""
-    chat_id = callback_query.get("message", {}).get("chat", {}).get("id")
-    uid = str(callback_query.get("from", {}).get("id", chat_id))
+
+    chat_id = (
+        callback_query.get("message", {})
+        .get("chat", {})
+        .get("id")
+    )
+
+    uid = str(
+        callback_query.get("from", {})
+        .get("id", chat_id)
+    )
+
     cq_id = callback_query.get("id")
 
-    if cq_id:
-        try:
-            await tg("answerCallbackQuery", {"callback_query_id": cq_id})
-        except Exception:
-            pass
-
-    if data == "showaimode":
+    if data.startswith("chatmode:"):
+        mode = data.split(":", 1)[1]
+        if mode not in CHAT_MODE_LABELS:
+            if cq_id:
+                try:
+                    await tg("answerCallbackQuery", {"callback_query_id": cq_id, "text": "❌ Mode tidak dikenali."})
+                except Exception:
+                    pass
+            return
+        set_chat_mode(uid, mode)
+        # Persist hanya perubahan mode; FAST tidak memuat memory.
+        await save_persistent_memory(uid)
+        if cq_id:
+            try:
+                await tg("answerCallbackQuery", {"callback_query_id": cq_id, "text": f"Mode: {CHAT_MODE_LABELS[mode]}"})
+            except Exception:
+                pass
         if chat_id:
-            await send_text(chat_id, "⚙️ Pilih AI/model yang ingin digunakan:", reply_markup=build_ai_mode_keyboard())
+            if mode == CHAT_MODE_FAST:
+                msg = "⚡ AI BIASA / FAST AKTIF\n\nMemory Agent: OFF\nPercakapan ini tidak dibaca/disimpan sebagai memory Agent."
+            else:
+                await load_persistent_memory(uid)
+                msg = "🧠 AI AGENT AKTIF\n\nMemory GitHub: ON\nKonteks pekerjaan akan digunakan dan memory penting dapat disimpan."
+            await send_text(chat_id, msg, reply_markup=build_chat_mode_keyboard())
         return
 
-    if data.startswith("convmode:"):
-        mode = data.split(":", 1)[1]
-        if mode not in CONVERSATION_MODE_LABELS:
-            return
+    if not data.startswith("aimode:"):
 
-        # Jawab callback SECEPAT MUNGKIN agar tombol Telegram tidak terlihat
-        # seperti macet. Jangan menunggu GitHub sebelum memberi konfirmasi.
+        if cq_id:
+            try:
+                await tg(
+                    "answerCallbackQuery",
+                    {"callback_query_id": cq_id},
+                )
+            except Exception:
+                pass
+
+        return
+
+    mode = data.split(":", 1)[1]
+
+    if mode not in AI_MODE_LABELS:
+
         if cq_id:
             try:
                 await tg(
                     "answerCallbackQuery",
                     {
                         "callback_query_id": cq_id,
-                        "text": f"Mode: {CONVERSATION_MODE_LABELS[mode]}",
+                        "text": "❌ Pilihan tidak dikenali.",
                         "show_alert": False,
                     },
                 )
             except Exception:
                 pass
 
-        if chat_id:
-            if mode == CONVERSATION_MODE_AGENT:
-                msg = (
-                    "🧠 AI AGENT AKTIF\n\n"
-                    "Memory GitHub dan konteks pekerjaan akan digunakan "
-                    "dan disimpan otomatis."
-                )
-            else:
-                msg = (
-                    "⚡ AI BIASA / FAST AKTIF\n\n"
-                    "Mode ini tidak membaca atau menyimpan memory Agent."
-                )
-            await send_text(
-                chat_id,
-                msg,
-                reply_markup=build_conversation_mode_keyboard(),
-            )
-
-        # Simpan pilihan MODE setelah konfirmasi.
-        # FAST tetap tidak membaca/menyimpan isi memory percakapan.
-        # Hanya preferensi mode yang boleh dipersistenkan agar pilihan
-        # tetap bertahan setelah restart.
-        async with _user_locks[uid]:
-            set_conversation_mode(uid, mode)
-            if mode == CONVERSATION_MODE_AGENT:
-                await load_persistent_memory(uid)
-            await save_persistent_memory(uid)
-
         return
 
-    if data.startswith("aimode:"):
-        mode = data.split(":", 1)[1]
-        if mode not in AI_MODE_LABELS:
-            return
-        async with _user_locks[uid]:
-            set_ai_mode(uid, mode)
-            if get_conversation_mode(uid) == CONVERSATION_MODE_AGENT:
-                await save_persistent_memory(uid)
-        if chat_id:
-            await send_text(chat_id, f"✅ Provider AI diubah ke:\n{AI_MODE_LABELS[mode]}")
+    await load_persistent_memory(uid)
+    set_ai_mode(uid, mode)
+    await save_persistent_memory(uid)
+
+    label = AI_MODE_LABELS[mode]
+
+    if cq_id:
+        try:
+            await tg(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": cq_id,
+                    "text": f"Mode diubah ke {label}",
+                },
+            )
+        except Exception:
+            pass
+
+    if chat_id:
+        await send_text(
+            chat_id,
+            f"✅ Mode AI diubah ke:\n{label}",
+        )
 
 
 # ============================================================
@@ -4115,17 +4123,17 @@ async def handle(update):
         "/start"
     ):
 
-        await register_telegram_commands()
-
-        # /start adalah titik pemulihan state. Setelah state dimuat,
-        # chat FAST berikutnya tidak perlu membaca GitHub lagi.
-        async with _user_locks[uid]:
-            await load_persistent_memory(uid)
-        current_mode = get_conversation_mode(uid)
+        # /start perlu memulihkan setting mode; memory hanya dipakai jika Agent.
+        await load_persistent_memory(uid)
+        await set_bot_commands()
+        current_chat_mode = get_chat_mode(uid)
+        mode_line = CHAT_MODE_LABELS.get(current_chat_mode, CHAT_MODE_LABELS[CHAT_MODE_FAST])
         await send_text(
             chat_id,
-            """
+            f"""
 🤖 Designmanufaktur Super AI Agent aktif.
+
+🎛️ Mode percakapan saat ini: {mode_line}
 
 🧠 Smart Multi-AI Router
 🏗️ Civil Calculator
@@ -4195,10 +4203,7 @@ Perintah:
 
 /model
 /ai
-/mode
 /reset
-/ingat <informasi penting>
-/forget_memory
 /gambar <prompt>
 
 📸 UPLOAD HASIL PEKERJAAN KE WEBSITE
@@ -4208,12 +4213,37 @@ Contoh: /pekerjaan kanopi cibinong
 
 ⚠️ Untuk struktur:
 hasil material bukan pengganti desain engineer.
-
-MODE SAAT INI: """ + CONVERSATION_MODE_LABELS.get(current_mode, CONVERSATION_MODE_LABELS[CONVERSATION_MODE_FAST]) + """
 """,
-            reply_markup=build_conversation_mode_keyboard(),
+            reply_markup=build_chat_mode_keyboard(),
         )
 
+        return
+
+    # ========================================================
+    # MODE FAST / AGENT
+    # ========================================================
+
+    if text.startswith("/mode"):
+        await load_persistent_memory(uid)
+        arg = command_arg(text).strip().lower()
+        if arg in ("fast", "biasa", "ai", "simple"):
+            set_chat_mode(uid, CHAT_MODE_FAST)
+        elif arg in ("agent", "memory", "memori"):
+            set_chat_mode(uid, CHAT_MODE_AGENT)
+        elif not arg:
+            current = get_chat_mode(uid)
+            await send_text(
+                chat_id,
+                f"🎛️ Mode saat ini: {CHAT_MODE_LABELS.get(current, CHAT_MODE_LABELS[CHAT_MODE_FAST])}\n\n⚡ FAST = cepat, tanpa memory Agent.\n🧠 AGENT = menggunakan dan menyimpan konteks pekerjaan.",
+                reply_markup=build_chat_mode_keyboard(),
+            )
+            return
+        else:
+            await send_text(chat_id, "❌ Gunakan /mode fast atau /mode agent.", reply_markup=build_chat_mode_keyboard())
+            return
+        await save_persistent_memory(uid)
+        label = CHAT_MODE_LABELS[get_chat_mode(uid)]
+        await send_text(chat_id, f"✅ Mode diubah ke:\n{label}", reply_markup=build_chat_mode_keyboard())
         return
 
     # ========================================================
@@ -4224,47 +4254,15 @@ MODE SAAT INI: """ + CONVERSATION_MODE_LABELS.get(current_mode, CONVERSATION_MOD
         "/reset"
     ):
 
-        memory.pop(uid, None)
-        memory[uid] = []
-        if get_conversation_mode(uid) == CONVERSATION_MODE_AGENT:
-            await save_persistent_memory(uid)
-        await send_text(chat_id, "✅ Riwayat sesi dihapus. 🧠 Memory jangka panjang tetap tersimpan.")
+        await load_persistent_memory(uid)
+        memory[uid] = [m for m in history(uid) if m.get("role") == "memory"][-MAX_MEMORY:]
+        await save_persistent_memory(uid)
 
-        return
+        await send_text(
+            chat_id,
+            "✅ Memory sesi dihapus.",
+        )
 
-    # ========================================================
-    # FORGET LONG-TERM MEMORY
-    # ========================================================
-    if text.startswith("/forget_memory") or text.startswith("/hapus_memori"):
-        async with _user_locks[uid]:
-            long_term_memory[uid] = []
-            memory[uid] = []
-            if get_conversation_mode(uid) == CONVERSATION_MODE_AGENT:
-                await save_persistent_memory(uid)
-        await send_text(chat_id, "🗑️ Memory jangka panjang dan riwayat sesi user ini sudah dihapus dari memory bot.")
-        return
-
-    # ========================================================
-    # MODE FAST / AGENT
-    # ========================================================
-    if text.startswith("/mode"):
-        mode = command_arg(text).strip().lower()
-        if mode in ("fast", "biasa", "normal"):
-            set_conversation_mode(uid, CONVERSATION_MODE_FAST)
-            await save_persistent_memory(uid)
-        elif mode in ("agent", "agen", "memory"):
-            async with _user_locks[uid]:
-                await load_persistent_memory(uid)
-                set_conversation_mode(uid, CONVERSATION_MODE_AGENT)
-                await save_persistent_memory(uid)
-        elif not mode:
-            current = get_conversation_mode(uid)
-            await send_text(chat_id, f"🤖 Mode saat ini: {CONVERSATION_MODE_LABELS[current]}", reply_markup=build_conversation_mode_keyboard())
-            return
-        else:
-            await send_text(chat_id, "Gunakan /mode fast atau /mode agent")
-            return
-        await send_text(chat_id, f"✅ Mode diubah ke:\n{CONVERSATION_MODE_LABELS[get_conversation_mode(uid)]}", reply_markup=build_conversation_mode_keyboard())
         return
 
     # ========================================================
@@ -4274,6 +4272,8 @@ MODE SAAT INI: """ + CONVERSATION_MODE_LABELS.get(current_mode, CONVERSATION_MOD
     if text.startswith(
         "/model"
     ):
+
+        await load_persistent_memory(uid)
 
         current_mode = get_ai_mode(uid)
         current_label = AI_MODE_LABELS.get(
@@ -4304,8 +4304,11 @@ Pollinations (fallback): {'✅ AKTIF' if POLLINATIONS_ENABLED else '❌ TIDAK AK
 👇 Tap tombol untuk ganti AI secara manual:
 """
 
-        status_text += f"\n\n🤖 Mode percakapan: {CONVERSATION_MODE_LABELS[get_conversation_mode(uid)]}\n🧠 Memory Agent: {'AKTIF' if get_conversation_mode(uid) == CONVERSATION_MODE_AGENT else 'NONAKTIF'}"
-        await send_text(chat_id, status_text, reply_markup=build_conversation_mode_keyboard())
+        await send_text(
+            chat_id,
+            status_text,
+            reply_markup=build_ai_mode_keyboard(),
+        )
 
         return
 
@@ -4316,6 +4319,8 @@ Pollinations (fallback): {'✅ AKTIF' if POLLINATIONS_ENABLED else '❌ TIDAK AK
     if text.startswith(
         "/ai"
     ):
+
+        await load_persistent_memory(uid)
 
         arg = command_arg(text).strip().lower()
 
@@ -4404,21 +4409,28 @@ Pilihan:
         return
 
     # ========================================================
-    # SAVE EXPLICIT LONG-TERM MEMORY
+    # INGAT / REMEMBER — Agent memory
     # ========================================================
+
     if text.startswith("/ingat") or text.startswith("/remember"):
-        if get_conversation_mode(uid) != CONVERSATION_MODE_AGENT:
-            await send_text(chat_id, "⚡ Anda sedang di FAST MODE. Aktifkan 🧠 AI AGENT terlebih dahulu agar memory bisa disimpan.", reply_markup=build_conversation_mode_keyboard())
+        if get_chat_mode(uid) != CHAT_MODE_AGENT:
+            await send_text(chat_id, "⚠️ Aktifkan 🧠 AI AGENT terlebih dahulu agar memory permanen digunakan.", reply_markup=build_chat_mode_keyboard())
             return
-        fact = command_arg(text)
-        if not fact:
-            await send_text(chat_id, "Format: /ingat <informasi yang harus saya ingat>")
+        value = command_arg(text)
+        if not value:
+            await send_text(chat_id, "Format: /ingat <informasi yang ingin disimpan>")
             return
-        async with _user_locks[uid]:
-            await load_persistent_memory(uid)
-            remember_long_term(uid, fact, "user_instruction")
-            await save_persistent_memory(uid)
-        await send_text(chat_id, "🧠 Tersimpan sebagai memory jangka panjang.")
+        await load_persistent_memory(uid)
+        remember(uid, "memory", value)
+        await save_persistent_memory(uid)
+        await send_text(chat_id, "💾 Berhasil disimpan ke memory Agent GitHub.")
+        return
+
+    if text.startswith("/forget_memory") or text.startswith("/hapus_memori"):
+        await load_persistent_memory(uid)
+        memory[uid] = []
+        await save_persistent_memory(uid)
+        await send_text(chat_id, "🗑️ Memory permanen user ini sudah dihapus dari data memory yang tersimpan.")
         return
 
     # ========================================================
@@ -4718,70 +4730,53 @@ Jangan mengarang ukuran yang tidak terlihat.
 
     try:
 
-        conversation_mode = get_conversation_mode(uid)
+        chat_mode = get_chat_mode(uid)
+        if chat_mode == CHAT_MODE_AGENT:
+            await load_persistent_memory(uid)
 
-        # Satu user tidak boleh menjalankan dua request Agent bersamaan:
-        # ini mencegah memory GitHub saling menimpa. FAST juga memakai lock
-        # ringan, tetapi TIDAK membaca/menulis memory selama chat berlangsung.
-        async with _user_locks[uid]:
-            if conversation_mode == CONVERSATION_MODE_AGENT:
-                await load_persistent_memory(uid)
+        await tg(
+            "sendChatAction",
+            {
+                "chat_id": chat_id,
+                "action": "typing",
+            },
+        )
 
-            await tg(
-                "sendChatAction",
-                {
-                    "chat_id": chat_id,
-                    "action": "typing",
-                },
-            )
+        ai_mode = get_ai_mode(uid)
 
-            ai_mode = get_ai_mode(uid)
+        (
+            answer,
+            provider,
+            model,
+            task,
+            attempts,
+            elapsed,
+        ) = await asyncio.to_thread(
+            chat_router,
+            uid,
+            text,
+            ai_mode,
+            chat_mode == CHAT_MODE_AGENT,
+        )
 
-            (
-                answer,
-                provider,
-                model,
-                task,
-                attempts,
-                elapsed,
-            ) = await asyncio.to_thread(
-                chat_router,
-                uid,
-                text,
-                ai_mode,
-                conversation_mode,
-            )
+        if chat_mode == CHAT_MODE_AGENT:
+            remember(uid, "user", text)
+            remember(uid, "assistant", answer)
+            await save_persistent_memory(uid)
 
-            if conversation_mode == CONVERSATION_MODE_AGENT:
-                remember(uid, "user", text)
-                remember(uid, "assistant", answer)
-                await archive_agent_message(uid, "user", text)
-                await archive_agent_message(uid, "assistant", answer)
-
-                # Auto-memory ringan: fakta/preferences yang jelas dari user
-                # dipromosikan ke long-term memory tanpa menyimpan semua chat
-                # sebagai prompt permanen. Seluruh chat tetap ada di archive.
-                low = text.lower().strip()
-                memory_markers = (
-                    "saya ", "kami ", "usaha saya", "bisnis saya",
-                    "proyek saya", "pekerjaan saya", "gunakan ",
-                    "jangan ", "biasanya ", "preferensi", "mulai sekarang",
-                    "seterusnya", "ingat bahwa", "ingat ini"
-                )
-                has_dimension = bool(re.search(r"\b\d+(?:[.,]\d+)?\s*(?:m|cm|mm|meter|kg|ton|batang)\b", low))
-                if any(marker in low for marker in memory_markers) or has_dimension:
-                    remember_long_term(uid, text, "auto_context")
-
-                await save_persistent_memory(uid)
-
-            combined = answer + "\n\n" + _build_transparency_footer(
-                provider, model, task, ai_mode, attempts, elapsed
-            )
-            await send_text(
-                chat_id,
-                combined,
-                reply_markup=build_conversation_mode_keyboard(),
-            )
+        full_answer = answer + "\n\n" + _build_transparency_footer(
+            provider,
+            model,
+            task,
+            ai_mode,
+            attempts,
+            elapsed,
+        )
+        await send_text(
+            chat_id,
+            full_answer,
+            reply_markup=build_chat_mode_keyboard(),
+        )
 
         log.info(
             "CHAT DONE | task=%s | provider=%s | model=%s | mode=%s | waktu=%s",
@@ -4819,11 +4814,6 @@ async def root():
 
         "free_only":
             True,
-
-        "conversation_modes": {
-            "fast": "No persistent memory/context",
-            "agent": "Persistent GitHub memory + context",
-        },
 
         "telegram_format":
             "clean_and_mobile_friendly",
@@ -4897,16 +4887,6 @@ async def api_root():
 
 
 # ============================================================
-# SETUP TELEGRAM COMMANDS
-# ============================================================
-
-@app.get("/api/setup")
-async def setup_telegram():
-    ok = await register_telegram_commands(force=True)
-    return {"ok": ok, "commands": TELEGRAM_COMMANDS}
-
-
-# ============================================================
 # WEBHOOK IMPLEMENTATION
 # ============================================================
 
@@ -4931,30 +4911,20 @@ async def webhook_impl(
     update = await request.json()
 
     update_id = update.get("update_id")
-    if not await _mark_update_if_new(update_id):
-        log.info("DUPLICATE TELEGRAM UPDATE IGNORED | update_id=%s", update_id)
+    if not await claim_telegram_update(update_id):
+        log.info("DUPLICATE UPDATE IGNORED | update_id=%s", update_id)
         return {"ok": True, "duplicate": True}
 
-    # PENTING: jangan menunggu proses AI di webhook.
-    # Request AI bisa puluhan detik/menit; jika webhook menunggu,
-    # Telegram dapat menganggap request gagal lalu mengirim update
-    # yang sama lagi. Itu adalah penyebab utama balasan berulang.
-    # Kita sudah menandai update_id sebelum membuat task, sehingga
-    # duplicate yang datang ke instance ini langsung diabaikan.
-    asyncio.create_task(_safe_handle_update(update))
-
-    return {
-        "ok": True,
-        "accepted": True,
-        "update_id": update_id,
-    }
-
-
-async def _safe_handle_update(update):
     try:
         await handle(update)
     except Exception:
-        log.exception("BACKGROUND TELEGRAM UPDATE FAILED")
+        await release_telegram_update(update_id)
+        log.exception("WEBHOOK HANDLE FAILED | update_id=%s", update_id)
+        raise
+
+    return {
+        "ok": True
+    }
 
 
 # ============================================================
