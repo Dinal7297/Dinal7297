@@ -2457,12 +2457,13 @@ def chat_router(uid, text, ai_mode="auto", include_history=True, forced_task=Non
         if civil_result:
             return (civil_result, "Civil Calculator", "Local Calculation Engine", task, [], round(time.time() - start_time, 2))
 
-    # Default tercepat: Gemini -> NVIDIA -> OpenRouter.
+    # Prioritas otomatis: NVIDIA -> Gemini -> OpenRouter.
+    # NVIDIA menjadi provider utama sesuai konfigurasi FAST/AGENT.
+    # OpenRouter hanya dipakai jika dua provider utama gagal.
     providers = [
-        ("👁️ Gemini", lambda: call_gemini(uid, text, task, include_history=include_history)),
         ("⚡ NVIDIA", lambda: call_nvidia(uid, text, task, include_history=include_history)),
+        ("👁️ Gemini", lambda: call_gemini(uid, text, task, include_history=include_history)),
         ("🌐 OpenRouter Free", lambda: call_openrouter(uid, text, task, include_history=include_history)),
-        ("🌐 OpenRouter Cadangan", lambda: call_openrouter(uid, text, task, model=OPENROUTER_BACKUP_MODEL, include_history=include_history)),
     ]
 
     if ai_mode in NVIDIA_STYLE_TASK_MAP:
@@ -2477,6 +2478,8 @@ def chat_router(uid, text, ai_mode="auto", include_history=True, forced_task=Non
     attempts = []
     for provider_name, fn in providers:
         try:
+            # Jangan retry di provider utama: jika gagal, pindah langsung
+            # ke provider berikutnya agar fallback tidak menambah delay.
             answer, model = _call_with_retry(fn, retries=0)
             if not answer.strip():
                 raise RuntimeError("Provider mengembalikan jawaban kosong.")
@@ -3762,7 +3765,7 @@ hasil material bukan pengganti desain engineer.
     if text.startswith("/fast"):
         set_chat_mode(uid, CHAT_MODE_FAST)
         schedule_memory_save(uid)
-        await send_text(chat_id, "⚡ FAST MODE AKTIF\n\nChat tidak membaca memory GitHub sebelum menjawab.\nPrioritas: Gemini → NVIDIA → OpenRouter.\nMemory tetap dicatat dan disimpan di background.")
+        await send_text(chat_id, "⚡ FAST MODE AKTIF\n\nChat tidak membaca memory GitHub sebelum menjawab.\nPrioritas: NVIDIA → Gemini → OpenRouter.\nMemory tetap dicatat dan disimpan di background.")
         return
 
     if text.startswith("/agent"):
@@ -3774,7 +3777,7 @@ hasil material bukan pengganti desain engineer.
             except Exception:
                 pass
         await load_persistent_memory(uid)
-        await send_text(chat_id, "🧠 AGENT MODE AKTIF\n\nMemory lama dari GitHub sudah dimuat.\nPercakapan dalam mode Agent disimpan permanen ke GitHub.\nPrioritas: Gemini → NVIDIA → OpenRouter.")
+        await send_text(chat_id, "🧠 AGENT MODE AKTIF\n\nMemory lama dari GitHub sudah dimuat.\nPercakapan dalam mode Agent disimpan permanen ke GitHub.\nPrioritas: NVIDIA → Gemini → OpenRouter.")
         return
 
     # ========================================================
