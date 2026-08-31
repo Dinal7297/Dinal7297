@@ -1,0 +1,1 @@
+"""DesignManufaktur Vercel API package."""
