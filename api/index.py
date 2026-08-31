@@ -79,9 +79,7 @@ NVIDIA_MAX_OUTPUT_TOKENS = int(
 # OPENROUTER_FREE_MODEL yang di-set lewat env sudah tidak valid
 # (model_not_found / dihapus provider).
 
-OPENROUTER_BACKUP_MODEL = (
-    "meta-llama/llama-3.3-70b-instruct:free"
-)
+OPENROUTER_BACKUP_MODEL = "openrouter/free"
 
 POLLINATIONS_KEY = os.getenv(
     "POLLINATIONS_API_KEY",
@@ -457,8 +455,7 @@ memory_loaded_at = {}
 
 # FAST mode: batasi waktu tunggu per provider agar langsung pindah ke provider berikutnya.
 FAST_PROVIDER_TIMEOUT = float(os.getenv("FAST_PROVIDER_TIMEOUT", "6"))
-FAST_HEDGE_DELAY = float(os.getenv("FAST_HEDGE_DELAY", "2.5"))
-FAST_OPENROUTER_TIMEOUT = float(os.getenv("FAST_OPENROUTER_TIMEOUT", "5"))
+FAST_OPENROUTER_TIMEOUT = float(os.getenv("FAST_OPENROUTER_TIMEOUT", "6"))
 
 # Dedup cepat di instance aktif. Untuk Agent, claim GitHub tetap dipakai sebagai lapisan persisten.
 _processed_updates = {}
@@ -2344,22 +2341,35 @@ def call_openrouter(uid, text, task, model=None, use_memory=True):
 
     selected = model or OPENROUTER_FREE_MODEL
 
-    r = openrouter.chat.completions.create(
-        model=selected,
-        messages=build_messages(
-            uid,
-            text,
-            task,
-            use_memory=use_memory,
-        ),
-        max_tokens=OPENROUTER_MAX_OUTPUT_TOKENS,
-        extra_headers={
-            "HTTP-Referer":
-                "https://designmanufaktur.vercel.app",
-            "X-Title":
-                "Designmanufaktur Super AI Agent",
-        },
-    )
+    def _request(selected_model):
+        return openrouter.chat.completions.create(
+            model=selected_model,
+            messages=build_messages(
+                uid,
+                text,
+                task,
+                use_memory=use_memory,
+            ),
+            max_tokens=OPENROUTER_MAX_OUTPUT_TOKENS,
+            extra_headers={
+                "HTTP-Referer":
+                    "https://designmanufaktur.vercel.app",
+                "X-Title":
+                    "Designmanufaktur Super AI Agent",
+            },
+        )
+
+    try:
+        r = _request(selected)
+    except Exception as first_error:
+        # Model slug di env bisa sudah usang. Gunakan router free resmi
+        # sebagai fallback, tanpa mengubah fitur OpenRouter.
+        if selected != OPENROUTER_BACKUP_MODEL:
+            log.warning("OPENROUTER MODEL FALLBACK | %s -> %s | %s", selected, OPENROUTER_BACKUP_MODEL, first_error)
+            selected = OPENROUTER_BACKUP_MODEL
+            r = _request(selected)
+        else:
+            raise
 
     answer = (
         r.choices[0].message.content
@@ -2556,145 +2566,148 @@ def _call_with_retry(fn, retries=1, base_delay=1.5):
 
 async def chat_router_fast(uid, text, ai_mode="auto"):
     """
-    Jalur FAST: tidak membaca/menulis memory GitHub.
-
-    Untuk AUTO, NVIDIA dicoba terlebih dahulu. Jika NVIDIA belum selesai
-    dalam FAST_HEDGE_DELAY detik, Gemini langsung dimulai tanpa menunggu
-    NVIDIA selesai. Provider pertama yang berhasil memenangkan request.
-    Ini memangkas waktu tunggu tanpa mengubah sistem Agent.
+    Jalur khusus FAST. Tidak membaca/menulis memory GitHub.
+    NVIDIA dan Gemini diberi batas waktu ketat; jika lambat/gagal langsung pindah.
     """
     start_time = time.time()
     task = classify_task(text)
 
+    # Kalkulator lokal tetap instan dan tidak membutuhkan AI.
     if task == "civil":
         civil_result = civil_calculator(text)
         if civil_result:
-            return (civil_result, "Civil Calculator", "Local Calculation Engine",
-                    task, [], round(time.time() - start_time, 2))
-
-    async def run_provider(provider_name, fn, timeout):
-        t0 = time.time()
-        try:
-            result = await asyncio.wait_for(asyncio.to_thread(fn), timeout=timeout)
-            answer, model = result
-            if not answer or not answer.strip():
-                raise RuntimeError("Provider mengembalikan jawaban kosong.")
-            return {
-                "provider": provider_name, "model": model, "answer": answer,
-                "status": "ok", "elapsed": time.time() - t0,
-            }
-        except asyncio.TimeoutError:
-            return {
-                "provider": provider_name, "model": None, "answer": None,
-                "status": "timeout", "error": f"timeout > {timeout:.1f}s",
-                "elapsed": time.time() - t0,
-            }
-        except Exception as e:
-            return {
-                "provider": provider_name, "model": None, "answer": None,
-                "status": "failed", "error": str(e)[:250],
-                "elapsed": time.time() - t0,
-            }
-
-    nvidia_fn = lambda: call_nvidia(uid, text, task, use_memory=False)
-    gemini_fn = lambda: call_gemini(uid, text, task, use_memory=False)
-    openrouter_fn = lambda: call_openrouter(uid, text, task, use_memory=False)
-
-    # AUTO / NVIDIA-style: NVIDIA dulu, Gemini mulai setelah hedge delay jika NVIDIA lambat.
-    if ai_mode in ("auto", "nvidia_fast", "nvidia_coding", "nvidia_technical", "nvidia_reasoning"):
-        first = asyncio.create_task(
-            run_provider("⚡ NVIDIA", nvidia_fn, FAST_PROVIDER_TIMEOUT)
-        )
-        await asyncio.sleep(min(FAST_HEDGE_DELAY, FAST_PROVIDER_TIMEOUT))
-
-        # Jika NVIDIA sudah sukses, jangan panggil provider lain.
-        if first.done():
-            result = first.result()
-            if result["status"] == "ok":
-                return (result["answer"], result["provider"], result["model"], task,
-                        [{"provider": result["provider"], "model": result["model"], "status": "ok"}],
-                        round(time.time() - start_time, 2))
-
-        # NVIDIA lambat/gagal -> Gemini langsung dimulai.
-        second = asyncio.create_task(
-            run_provider("👁️ Gemini", gemini_fn, FAST_PROVIDER_TIMEOUT)
-        )
-        attempts = []
-        pending = {first, second}
-
-        while pending:
-            done, pending = await asyncio.wait(
-                pending, return_when=asyncio.FIRST_COMPLETED
-            )
-            for completed in done:
-                result = completed.result()
-                item = {
-                    "provider": result["provider"],
-                    "model": result.get("model"),
-                    "status": result["status"],
-                }
-                if result.get("error"):
-                    item["error"] = result["error"]
-                attempts.append(item)
-
-                if result["status"] == "ok":
-                    # Hentikan penantian terhadap provider lain. Thread HTTP yang
-                    # sudah berjalan tidak mempengaruhi jawaban Telegram berikutnya.
-                    for task_obj in pending:
-                        task_obj.cancel()
-                    return (
-                        result["answer"], result["provider"], result["model"], task,
-                        attempts, round(time.time() - start_time, 2)
-                    )
-
-        # NVIDIA + Gemini gagal -> OpenRouter fallback.
-        third = await run_provider(
-            "🌐 OpenRouter Free", openrouter_fn, FAST_OPENROUTER_TIMEOUT
-        )
-        item = {
-            "provider": third["provider"],
-            "model": third.get("model"),
-            "status": third["status"],
-        }
-        if third.get("error"):
-            item["error"] = third["error"]
-        attempts.append(item)
-        if third["status"] == "ok":
             return (
-                third["answer"], third["provider"], third["model"], task,
-                attempts, round(time.time() - start_time, 2)
+                civil_result, "Civil Calculator", "Local Calculation Engine",
+                task, [], round(time.time() - start_time, 2)
             )
-        raise RuntimeError(
-            "Semua provider FAST gagal. "
-            + "; ".join(
-                f"{x['provider']}: {x.get('error', x['status'])}"
-                for x in attempts
-            )
-        )
 
-    # Jika user memilih Gemini/OpenRouter secara manual, pilihan tetap dihormati,
-    # tetapi provider cadangan tetap tersedia agar FAST tidak buntu.
+    # FAST AUTO: NVIDIA -> Gemini -> OpenRouter.
+    # Tidak ada retry pada provider yang lambat/gagal.
+    providers = []
+
     if ai_mode == "gemini":
-        providers = [("👁️ Gemini", gemini_fn, FAST_PROVIDER_TIMEOUT),
-                     ("⚡ NVIDIA", nvidia_fn, FAST_PROVIDER_TIMEOUT),
-                     ("🌐 OpenRouter Free", openrouter_fn, FAST_OPENROUTER_TIMEOUT)]
+        providers = [(
+            "👁️ Gemini",
+            lambda: call_gemini(uid, text, task, use_memory=False),
+            FAST_PROVIDER_TIMEOUT,
+        ), (
+            "⚡ NVIDIA",
+            lambda: call_nvidia(uid, text, task, use_memory=False),
+            FAST_PROVIDER_TIMEOUT,
+        )]
+    elif ai_mode == "openrouter":
+        providers = [(
+            "🌐 OpenRouter Free",
+            lambda: call_openrouter(uid, text, task, use_memory=False),
+            FAST_OPENROUTER_TIMEOUT,
+        ), (
+            "⚡ NVIDIA",
+            lambda: call_nvidia(uid, text, task, use_memory=False),
+            FAST_PROVIDER_TIMEOUT,
+        ), (
+            "👁️ Gemini",
+            lambda: call_gemini(uid, text, task, use_memory=False),
+            FAST_PROVIDER_TIMEOUT,
+        )]
     else:
-        providers = [("🌐 OpenRouter Free", openrouter_fn, FAST_OPENROUTER_TIMEOUT),
-                     ("⚡ NVIDIA", nvidia_fn, FAST_PROVIDER_TIMEOUT),
-                     ("👁️ Gemini", gemini_fn, FAST_PROVIDER_TIMEOUT)]
+        # AUTO dan NVIDIA-style: NVIDIA tetap dicoba dulu, tetapi tidak boleh menahan Gemini.
+        providers = [(
+            "⚡ NVIDIA",
+            lambda: call_nvidia(uid, text, task, use_memory=False),
+            FAST_PROVIDER_TIMEOUT,
+        ), (
+            "👁️ Gemini",
+            lambda: call_gemini(uid, text, task, use_memory=False),
+            FAST_PROVIDER_TIMEOUT,
+        ), (
+            "🌐 OpenRouter Free",
+            lambda: call_openrouter(uid, text, task, use_memory=False),
+            FAST_OPENROUTER_TIMEOUT,
+        )]
 
     attempts = []
-    for name, fn, timeout in providers:
-        result = await run_provider(name, fn, timeout)
-        item = {"provider": name, "model": result.get("model"), "status": result["status"]}
-        if result.get("error"):
-            item["error"] = result["error"]
-        attempts.append(item)
-        if result["status"] == "ok":
-            return (result["answer"], name, result["model"], task, attempts,
-                    round(time.time() - start_time, 2))
+    errors = []
 
-    raise RuntimeError("Semua provider FAST gagal.")
+    async def _run_provider(provider_name, fn, timeout):
+        t0 = time.time()
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(fn),
+                timeout=timeout,
+            )
+            if not result[0] or not result[0].strip():
+                raise RuntimeError("Provider mengembalikan jawaban kosong.")
+            return provider_name, result, None, time.time() - t0
+        except asyncio.TimeoutError:
+            return provider_name, None, f"timeout > {timeout:.1f}s", time.time() - t0
+        except Exception as e:
+            return provider_name, None, str(e)[:250], time.time() - t0
+
+    # AUTO FAST: NVIDIA dan Gemini dimulai BERSAMAAN.
+    # Provider pertama yang selesai dengan jawaban valid langsung dipakai.
+    if ai_mode == "auto" or ai_mode.startswith("nvidia_"):
+        primary = [p for p in providers if p[0] in ("⚡ NVIDIA", "👁️ Gemini")]
+        fallback = [p for p in providers if p[0] == "🌐 OpenRouter Free"]
+        if len(primary) == 2:
+            tasks = [asyncio.create_task(_run_provider(*p)) for p in primary]
+            pending = set(tasks)
+            results = []
+            winner = None
+            while pending:
+                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for done_task in done:
+                    result = await done_task
+                    results.append(result)
+                    provider_name, result_data, err, elapsed = result
+                    if result_data is not None:
+                        winner = result
+                        break
+                if winner is not None:
+                    break
+            if winner is not None:
+                provider_name, result_data, _, _ = winner
+                # Batalkan request lawan; thread HTTP yang sudah berjalan boleh
+                # selesai sendiri, tetapi hasilnya tidak pernah dikirim ke user.
+                for task_obj in pending:
+                    task_obj.cancel()
+                answer, model = result_data
+                attempts.append({"provider": provider_name, "model": model, "status": "ok"})
+                for pn, res, err, elapsed in results:
+                    if pn != provider_name:
+                        attempts.append({"provider": pn, "model": None, "status": "ok" if res else ("timeout" if err and err.startswith("timeout") else "failed"), "error": err})
+                return answer, provider_name, model, task, attempts, round(time.time()-start_time,2)
+            # Kedua primary gagal/timeout.
+            for pn, res, err, elapsed in results:
+                errors.append(f"{pn}: {err}")
+                attempts.append({"provider": pn, "model": None, "status": "timeout" if err and err.startswith("timeout") else "failed", "error": err})
+        # fallback OpenRouter only after both primary providers fail
+        for provider_name, fn, timeout in fallback:
+            try:
+                answer, model = await asyncio.wait_for(asyncio.to_thread(fn), timeout=timeout)
+                attempts.append({"provider": provider_name, "model": model, "status": "ok"})
+                return answer, provider_name, model, task, attempts, round(time.time()-start_time,2)
+            except Exception as e:
+                err = str(e)[:250]
+                errors.append(f"{provider_name}: {err}")
+                attempts.append({"provider": provider_name, "model": None, "status": "failed", "error": err})
+
+    else:
+        # Manual provider mode tetap berurutan agar pilihan user dihormati.
+        for provider_name, fn, timeout in providers:
+            try:
+                answer, model = await asyncio.wait_for(asyncio.to_thread(fn), timeout=timeout)
+                attempts.append({"provider": provider_name, "model": model, "status": "ok"})
+                return answer, provider_name, model, task, attempts, round(time.time()-start_time,2)
+            except asyncio.TimeoutError:
+                err=f"timeout > {timeout:.1f}s"
+                errors.append(f"{provider_name}: {err}")
+                attempts.append({"provider": provider_name, "model": None, "status": "timeout", "error": err})
+            except Exception as e:
+                err=str(e)[:250]
+                errors.append(f"{provider_name}: {err}")
+                attempts.append({"provider": provider_name, "model": None, "status": "failed", "error": err})
+
+    raise RuntimeError("Semua provider FAST gagal. " + " | ".join(errors))
 
 
 # ============================================================
@@ -4178,7 +4191,8 @@ async def handle_callback_query(callback_query):
                     pass
             return
         set_chat_mode(uid, mode)
-        # FAST tidak perlu load memory. Konfirmasi tombol dikirim segera.
+        # Persist hanya perubahan mode; FAST tidak memuat memory.
+        await save_persistent_memory(uid)
         if cq_id:
             try:
                 await tg("answerCallbackQuery", {"callback_query_id": cq_id, "text": f"Mode: {CHAT_MODE_LABELS[mode]}"})
@@ -4186,15 +4200,11 @@ async def handle_callback_query(callback_query):
                 pass
         if chat_id:
             if mode == CHAT_MODE_FAST:
-                msg = "⚡ AI BIASA / FAST AKTIF\n\nMemory Agent: OFF\nTidak membaca/menyimpan memory Agent pada chat cepat."
-                await send_text(chat_id, msg, reply_markup=build_chat_mode_keyboard())
-                # Persist mode setelah konfirmasi dikirim; tidak menghambat feedback tombol.
-                await save_persistent_memory(uid)
+                msg = "⚡ AI BIASA / FAST AKTIF\n\nMemory Agent: OFF\nPercakapan ini tidak dibaca/disimpan sebagai memory Agent."
             else:
-                await load_persistent_memory(uid, force=True)
+                await load_persistent_memory(uid)
                 msg = "🧠 AI AGENT AKTIF\n\nMemory GitHub: ON\nKonteks pekerjaan akan digunakan dan memory penting dapat disimpan."
-                await send_text(chat_id, msg, reply_markup=build_chat_mode_keyboard())
-                await save_persistent_memory(uid)
+            await send_text(chat_id, msg, reply_markup=build_chat_mode_keyboard())
         return
 
     if not data.startswith("aimode:"):
@@ -4409,9 +4419,8 @@ hasil material bukan pengganti desain engineer.
     # ========================================================
 
     if text.startswith("/mode"):
+        await load_persistent_memory(uid)
         arg = command_arg(text).strip().lower()
-        if arg not in ("fast", "biasa", "ai", "simple"):
-            await load_persistent_memory(uid)
         if arg in ("fast", "biasa", "ai", "simple"):
             set_chat_mode(uid, CHAT_MODE_FAST)
         elif arg in ("agent", "memory", "memori"):
