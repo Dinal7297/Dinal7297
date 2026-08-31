@@ -484,6 +484,34 @@ MAX_MEMORY = 20
 user_ai_mode = {}
 
 # ============================================================
+# CHAT MODE: FAST vs AGENT / MEMORY
+# ============================================================
+CHAT_MODE_FAST = "fast"
+CHAT_MODE_AGENT = "agent"
+CHAT_MODE_LABELS = {
+    CHAT_MODE_FAST: "⚡ AI BIASA / FAST",
+    CHAT_MODE_AGENT: "🧠 AI AGENT / MEMORY",
+}
+user_chat_mode = {}
+
+def get_chat_mode(uid):
+    return user_chat_mode.get(str(uid), CHAT_MODE_FAST)
+
+def set_chat_mode(uid, mode):
+    if mode in CHAT_MODE_LABELS:
+        user_chat_mode[str(uid)] = mode
+
+def build_chat_mode_keyboard():
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "⚡ AI BIASA / FAST", "callback_data": "chatmode:fast"},
+                {"text": "🧠 AI AGENT / MEMORY", "callback_data": "chatmode:agent"},
+            ]
+        ]
+    }
+
+# ============================================================
 # PERSISTENT MEMORY — SEPARATE GITHUB REPOSITORY
 # ============================================================
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
@@ -596,6 +624,9 @@ async def load_persistent_memory(uid):
         raw = base64.b64decode(encoded.replace("\n", "")).decode("utf-8")
         saved = json.loads(raw)
         if isinstance(saved, dict):
+            saved_mode = saved.get("chat_mode")
+            if saved_mode in CHAT_MODE_LABELS:
+                user_chat_mode[uid] = saved_mode
             saved = saved.get("memory", [])
         if not isinstance(saved, list):
             saved = []
@@ -611,7 +642,12 @@ async def save_persistent_memory(uid):
     if not GITHUB_TOKEN or not GITHUB_REPO:
         log.warning("PERSISTENT MEMORY SAVE SKIPPED | GITHUB_TOKEN/GITHUB_REPO belum tersedia")
         return
-    raw = json.dumps({"user_id": uid, "memory": history(uid)[-MAX_MEMORY:], "updated_at": int(time.time())}, ensure_ascii=False, indent=2)
+    raw = json.dumps({
+        "user_id": uid,
+        "chat_mode": get_chat_mode(uid),
+        "memory": history(uid)[-MAX_MEMORY:],
+        "updated_at": int(time.time()),
+    }, ensure_ascii=False, indent=2)
     encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
     url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
@@ -3673,6 +3709,54 @@ async def handle(update):
         uid = str(from_user.get("id", ""))
         chat_id = callback.get("message", {}).get("chat", {}).get("id")
 
+        # ====================================================
+        # CHAT MODE: FAST vs AGENT / MEMORY
+        # ====================================================
+        chat_mode_map = {
+            "chatmode:fast": CHAT_MODE_FAST,
+            "chatmode:agent": CHAT_MODE_AGENT,
+        }
+
+        if data in chat_mode_map:
+            mode = chat_mode_map[data]
+
+            # Muat memory terlebih dahulu supaya saat pindah ke FAST
+            # kita tidak pernah menimpa memory GitHub dengan list kosong.
+            await load_persistent_memory(uid)
+            set_chat_mode(uid, mode)
+            await save_persistent_memory(uid)
+
+            if mode == CHAT_MODE_FAST:
+                # FAST tidak membawa memory Agent ke request berikutnya.
+                # Memory tetap aman tersimpan di GitHub dan akan dimuat
+                # kembali ketika user memilih AGENT.
+                memory[uid] = []
+
+            if callback_id:
+                try:
+                    await tg("answerCallbackQuery", {
+                        "callback_query_id": callback_id,
+                        "text": f"Mode: {CHAT_MODE_LABELS[mode]}",
+                    })
+                except Exception:
+                    pass
+
+            if chat_id:
+                if mode == CHAT_MODE_AGENT:
+                    msg = (
+                        "🧠 AI AGENT / MEMORY AKTIF\n\n"
+                        "Memory GitHub: ON\n"
+                        "Konteks proyek dan memory penting akan digunakan."
+                    )
+                else:
+                    msg = (
+                        "⚡ AI BIASA / FAST AKTIF\n\n"
+                        "Memory Agent: OFF\n"
+                        "Request berikutnya tidak menggunakan memory Agent."
+                    )
+                await send_text(chat_id, msg, reply_markup=build_chat_mode_keyboard())
+            return
+
         mode_map = {
             "ai_auto": "auto",
             "ai_nvidia_fast": "nvidia_fast",
@@ -3748,10 +3832,19 @@ async def handle(update):
         "/start"
     ):
 
+        await load_persistent_memory(uid)
+        current_chat_mode = get_chat_mode(uid)
+        mode_line = CHAT_MODE_LABELS.get(current_chat_mode, CHAT_MODE_LABELS[CHAT_MODE_FAST])
+
         await send_text(
             chat_id,
-            """
+            f"""
 🤖 Designmanufaktur Super AI Agent aktif.
+
+🎛️ Mode percakapan: {mode_line}
+
+⚡ FAST = cepat, tanpa memory Agent.
+🧠 AGENT = menggunakan memory proyek/persisten.
 
 🧠 Smart Multi-AI Router
 🏗️ Civil Calculator
@@ -3819,6 +3912,7 @@ urugan 10 x 5 x 0.2 meter
 
 Perintah:
 
+/mode
 /model
 /reset
 /gambar <prompt>
@@ -3831,8 +3925,55 @@ Contoh: /pekerjaan kanopi cibinong
 ⚠️ Untuk struktur:
 hasil material bukan pengganti desain engineer.
 """,
+            reply_markup=build_chat_mode_keyboard(),
         )
 
+        return
+
+    # ========================================================
+    # MODE FAST / AGENT
+    # ========================================================
+
+    if text.startswith("/mode"):
+        await load_persistent_memory(uid)
+        arg = command_arg(text).strip().lower()
+
+        if arg in ("fast", "biasa", "simple", "ai"):
+            # Simpan mode FAST tanpa menghapus memory permanen di GitHub.
+            set_chat_mode(uid, CHAT_MODE_FAST)
+            await save_persistent_memory(uid)
+            memory[uid] = []
+            await send_text(
+                chat_id,
+                "⚡ AI BIASA / FAST AKTIF\n\n"
+                "Memory Agent: OFF\n"
+                "Request berikutnya tidak menggunakan memory Agent.",
+                reply_markup=build_chat_mode_keyboard(),
+            )
+            return
+
+        if arg in ("agent", "memory", "memori"):
+            set_chat_mode(uid, CHAT_MODE_AGENT)
+            await load_persistent_memory(uid)
+            await save_persistent_memory(uid)
+            await send_text(
+                chat_id,
+                "🧠 AI AGENT / MEMORY AKTIF\n\n"
+                "Memory GitHub: ON\n"
+                "Konteks proyek dan memory penting akan digunakan.",
+                reply_markup=build_chat_mode_keyboard(),
+            )
+            return
+
+        current = get_chat_mode(uid)
+        await send_text(
+            chat_id,
+            f"🎛️ Mode saat ini: {CHAT_MODE_LABELS[current]}\n\n"
+            "Pilih tombol di bawah atau gunakan:\n"
+            "/mode fast\n"
+            "/mode agent",
+            reply_markup=build_chat_mode_keyboard(),
+        )
         return
 
     # ========================================================
@@ -4199,7 +4340,12 @@ Jangan mengarang ukuran yang tidak terlihat.
 
     try:
 
-        await load_persistent_memory(uid)
+        current_chat_mode = get_chat_mode(uid)
+        if current_chat_mode == CHAT_MODE_AGENT:
+            await load_persistent_memory(uid)
+        else:
+            # FAST benar-benar tidak memakai memory Agent/persisten.
+            memory[uid] = []
 
         await tg(
             "sendChatAction",
@@ -4228,7 +4374,8 @@ Jangan mengarang ukuran yang tidak terlihat.
             answer,
         )
 
-        await save_persistent_memory(uid)
+        if current_chat_mode == CHAT_MODE_AGENT:
+            await save_persistent_memory(uid)
 
         transparent_answer = format_transparent_response(answer, meta)
 
