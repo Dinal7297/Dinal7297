@@ -3934,6 +3934,50 @@ def command_arg(text):
 
 
 # ============================================================
+# TELEGRAM COMMAND MENU
+# ============================================================
+
+TELEGRAM_COMMANDS = [
+    {"command": "start", "description": "🚀 Menu utama"},
+    {"command": "mode", "description": "⚡ FAST / 🧠 AGENT"},
+    {"command": "model", "description": "🤖 Pilih AI / model"},
+    {"command": "ai", "description": "🧠 Atur provider AI"},
+    {"command": "ingat", "description": "💾 Simpan memory Agent"},
+    {"command": "reset", "description": "🔄 Reset riwayat sesi"},
+    {"command": "gambar", "description": "🎨 Buat gambar"},
+    {"command": "pekerjaan", "description": "📸 Simpan hasil pekerjaan"},
+]
+
+_commands_registered = False
+_commands_lock = asyncio.Lock()
+
+
+async def register_telegram_commands(force=False):
+    global _commands_registered
+    if _commands_registered and not force:
+        return True
+    if not TELEGRAM_TOKEN:
+        return False
+    async with _commands_lock:
+        if _commands_registered and not force:
+            return True
+        try:
+            result = await tg(
+                "setMyCommands",
+                {"commands": TELEGRAM_COMMANDS},
+            )
+            if isinstance(result, dict) and result.get("ok") is False:
+                log.warning("SET COMMANDS FAILED | %s", result)
+                return False
+            _commands_registered = True
+            log.info("TELEGRAM COMMAND MENU REGISTERED")
+            return True
+        except Exception as e:
+            log.warning("SET COMMANDS FAILED | %s", str(e)[:300])
+            return False
+
+
+# ============================================================
 # HANDLE CALLBACK QUERY (tombol inline /model)
 # ============================================================
 
@@ -3992,15 +4036,15 @@ async def handle_callback_query(callback_query):
                 reply_markup=build_conversation_mode_keyboard(),
             )
 
-        # Simpan state setelah user mendapat konfirmasi.
-        # FAST sengaja TIDAK menyentuh memory/history GitHub.
+        # Simpan pilihan MODE setelah konfirmasi.
+        # FAST tetap tidak membaca/menyimpan isi memory percakapan.
+        # Hanya preferensi mode yang boleh dipersistenkan agar pilihan
+        # tetap bertahan setelah restart.
         async with _user_locks[uid]:
+            set_conversation_mode(uid, mode)
             if mode == CONVERSATION_MODE_AGENT:
                 await load_persistent_memory(uid)
-                set_conversation_mode(uid, mode)
-                await save_persistent_memory(uid)
-            else:
-                set_conversation_mode(uid, mode)
+            await save_persistent_memory(uid)
 
         return
 
@@ -4070,6 +4114,8 @@ async def handle(update):
     if text.startswith(
         "/start"
     ):
+
+        await register_telegram_commands()
 
         # /start adalah titik pemulihan state. Setelah state dimuat,
         # chat FAST berikutnya tidak perlu membaca GitHub lagi.
@@ -4851,6 +4897,16 @@ async def api_root():
 
 
 # ============================================================
+# SETUP TELEGRAM COMMANDS
+# ============================================================
+
+@app.get("/api/setup")
+async def setup_telegram():
+    ok = await register_telegram_commands(force=True)
+    return {"ok": ok, "commands": TELEGRAM_COMMANDS}
+
+
+# ============================================================
 # WEBHOOK IMPLEMENTATION
 # ============================================================
 
@@ -4879,11 +4935,26 @@ async def webhook_impl(
         log.info("DUPLICATE TELEGRAM UPDATE IGNORED | update_id=%s", update_id)
         return {"ok": True, "duplicate": True}
 
-    await handle(update)
+    # PENTING: jangan menunggu proses AI di webhook.
+    # Request AI bisa puluhan detik/menit; jika webhook menunggu,
+    # Telegram dapat menganggap request gagal lalu mengirim update
+    # yang sama lagi. Itu adalah penyebab utama balasan berulang.
+    # Kita sudah menandai update_id sebelum membuat task, sehingga
+    # duplicate yang datang ke instance ini langsung diabaikan.
+    asyncio.create_task(_safe_handle_update(update))
 
     return {
-        "ok": True
+        "ok": True,
+        "accepted": True,
+        "update_id": update_id,
     }
+
+
+async def _safe_handle_update(update):
+    try:
+        await handle(update)
+    except Exception:
+        log.exception("BACKGROUND TELEGRAM UPDATE FAILED")
 
 
 # ============================================================
