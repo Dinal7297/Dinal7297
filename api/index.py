@@ -55,8 +55,12 @@ GEMINI_VIDEO_MODEL = os.getenv(
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_FREE_MODEL = os.getenv(
     "OPENROUTER_FREE_MODEL",
-    "openrouter/free",
+    "openai/gpt-oss-20b:free",
 )
+OPENROUTER_FREE_FALLBACKS = [
+    "openai/gpt-oss-20b:free",
+    "openrouter/free",
+]
 
 GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_FAST_MODEL = os.getenv(
@@ -71,7 +75,7 @@ GROQ_REASONING_MODEL = os.getenv(
 
 GROQ_CODING_MODEL = os.getenv(
     "GROQ_CODING_MODEL",
-    "qwen/qwen3-32b"
+    "openai/gpt-oss-20b"
 )
 
 # ------------------------------------------------------------
@@ -98,9 +102,7 @@ GROQ_BACKUP_MODEL_3 = "qwen/qwen3-32b"
 GROQ_BACKUP_MODEL_4 = "llama-3.1-8b-instant"
 GROQ_BACKUP_MODEL_5 = "gemma2-9b-it"
 
-OPENROUTER_BACKUP_MODEL = (
-    "meta-llama/llama-3.3-70b-instruct:free"
-)
+OPENROUTER_BACKUP_MODEL = "openai/gpt-oss-20b:free"
 
 POLLINATIONS_KEY = os.getenv(
     "POLLINATIONS_API_KEY",
@@ -465,7 +467,7 @@ nvidia = (
     OpenAI(
         api_key=NVIDIA_KEY,
         base_url="https://integrate.api.nvidia.com/v1",
-        timeout=15.0,
+        timeout=8.0,
         max_retries=0,
     )
     if NVIDIA_KEY
@@ -2315,46 +2317,39 @@ def classify_task(text):
 # ============================================================
 
 def call_openrouter(uid, text, task, model=None):
-
     if not openrouter:
-        raise RuntimeError(
-            "OPENROUTER_API_KEY belum tersedia."
-        )
+        raise RuntimeError("OPENROUTER_API_KEY belum tersedia.")
 
-    selected = model or OPENROUTER_FREE_MODEL
+    candidates = []
+    if model:
+        candidates.append(model)
+    candidates.extend(OPENROUTER_FREE_FALLBACKS)
 
-    r = openrouter.chat.completions.create(
-        model=selected,
-        messages=build_messages(
-            uid,
-            text,
-            task
-        ),
-        max_tokens=OPENROUTER_MAX_OUTPUT_TOKENS,
-        extra_headers={
-            "HTTP-Referer":
-                "https://designmanufaktur.vercel.app",
-            "X-Title":
-                "Designmanufaktur Super AI Agent",
-        },
-    )
+    # Deduplicate while preserving order.
+    candidates = list(dict.fromkeys(candidates))
+    last_error = None
 
-    answer = (
-        r.choices[0].message.content
-        or ""
-    )
+    for selected in candidates:
+        try:
+            r = openrouter.chat.completions.create(
+                model=selected,
+                messages=build_messages(uid, text, task),
+                max_tokens=OPENROUTER_MAX_OUTPUT_TOKENS,
+                extra_headers={
+                    "HTTP-Referer": "https://designmanufaktur.vercel.app",
+                    "X-Title": "Designmanufaktur Super AI Agent",
+                },
+            )
+            answer = r.choices[0].message.content or ""
+            if not answer.strip():
+                raise RuntimeError(f"OpenRouter ({selected}) mengembalikan jawaban kosong.")
+            return answer, (getattr(r, "model", None) or selected)
+        except Exception as e:
+            last_error = e
+            # Hanya lanjut ke kandidat FREE berikutnya jika model/endpoint gagal.
+            continue
 
-    if not answer.strip():
-        raise RuntimeError(
-            f"OpenRouter ({selected}) mengembalikan jawaban kosong."
-        )
-
-    selected_model = (
-        getattr(r, "model", None)
-        or selected
-    )
-
-    return answer, selected_model
+    raise RuntimeError(f"OpenRouter FREE gagal: {last_error}")
 
 
 # ============================================================
@@ -2362,11 +2357,8 @@ def call_openrouter(uid, text, task, model=None):
 # ============================================================
 
 def call_gemini(uid, text, task):
-
-    if not gemini:
-        raise RuntimeError(
-            "GEMINI_API_KEY belum tersedia."
-        )
+    if not GEMINI_KEY:
+        raise RuntimeError("GEMINI_API_KEY belum tersedia.")
 
     task_hint = {
 
@@ -2422,19 +2414,40 @@ jangan menyatakan aman tanpa perhitungan engineering.
 
     prompt += f"user: {text}"
 
-    r = gemini.models.generate_content(
-        model=GEMINI_CHAT_MODEL,
-        contents=prompt,
-    )
+    models = list(dict.fromkeys([
+        GEMINI_CHAT_MODEL,
+        "gemini-3.6-flash",
+        "gemini-3.5-flash-lite",
+    ]))
+    last_error = None
+    for selected_model in models:
+        try:
+            payload = {
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {"maxOutputTokens": 2048},
+            }
+            with httpx.Client(timeout=15.0) as client:
+                resp = client.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent",
+                    params={"key": GEMINI_KEY},
+                    json=payload,
+                )
+            if resp.status_code >= 400:
+                raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:300]}")
+            data = resp.json()
+            candidates = data.get("candidates") or []
+            answer = ""
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                answer = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+            if not answer.strip():
+                raise RuntimeError("Gemini mengembalikan jawaban kosong.")
+            return answer, selected_model
+        except Exception as e:
+            last_error = e
+            continue
 
-    answer = r.text or ""
-
-    if not answer.strip():
-        raise RuntimeError(
-            "Gemini mengembalikan jawaban kosong."
-        )
-
-    return answer, GEMINI_CHAT_MODEL
+    raise RuntimeError(f"Gemini gagal: {last_error}")
 
 
 # ============================================================
@@ -2497,50 +2510,73 @@ def call_nvidia(uid, text, task, reasoning_effort=None, model=None):
 # GROQ
 # ============================================================
 
-def call_groq(uid, text, task, model=None):
-
+def _groq_available_models():
     if not groq:
-        raise RuntimeError(
-            "GROQ_API_KEY belum tersedia."
+        return set()
+    try:
+        data = groq.models.list()
+        items = getattr(data, "data", None) or []
+        return {getattr(x, "id", "") for x in items if getattr(x, "id", None)}
+    except Exception:
+        return set()
+
+
+def _resolve_groq_model(task, requested=None):
+    available = _groq_available_models()
+    preferred = []
+    if requested:
+        preferred.append(requested)
+    if task == "coding":
+        preferred += ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]
+    elif task in ("reasoning", "math"):
+        preferred += ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+    else:
+        preferred += ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "llama-3.1-8b-instant"]
+    preferred += [GROQ_BACKUP_MODEL_1, GROQ_BACKUP_MODEL_2, GROQ_BACKUP_MODEL_4]
+    preferred = list(dict.fromkeys(preferred))
+    if available:
+        for candidate in preferred:
+            if candidate in available:
+                return candidate
+        raise RuntimeError("Groq tidak memiliki model teks yang kompatibel dari daftar saat ini.")
+    return preferred[0]
+
+
+def call_groq(uid, text, task, model=None):
+    if not groq:
+        raise RuntimeError("GROQ_API_KEY belum tersedia.")
+
+    selected = _resolve_groq_model(task, model)
+    try:
+        r = groq.chat.completions.create(
+            model=selected,
+            messages=build_messages(
+                uid, text, task,
+                max_turns=GROQ_MAX_CONTEXT_TURNS,
+                max_chars_per_item=GROQ_MAX_CONTEXT_CHARS_PER_ITEM,
+            ),
+            max_tokens=GROQ_MAX_OUTPUT_TOKENS,
         )
+    except Exception as e:
+        # Refresh model list once in case the provider changed its catalog.
+        refreshed = _resolve_groq_model(task, None)
+        if refreshed == selected:
+            raise
+        r = groq.chat.completions.create(
+            model=refreshed,
+            messages=build_messages(
+                uid, text, task,
+                max_turns=GROQ_MAX_CONTEXT_TURNS,
+                max_chars_per_item=GROQ_MAX_CONTEXT_CHARS_PER_ITEM,
+            ),
+            max_tokens=GROQ_MAX_OUTPUT_TOKENS,
+        )
+        selected = refreshed
 
-    if not model:
-
-        if task == "coding":
-            model = GROQ_CODING_MODEL
-
-        elif task in (
-            "reasoning",
-            "math",
-        ):
-            model = GROQ_REASONING_MODEL
-
-        else:
-            model = GROQ_FAST_MODEL
-
-    r = groq.chat.completions.create(
-        model=model,
-        messages=build_messages(
-            uid,
-            text,
-            task,
-            max_turns=GROQ_MAX_CONTEXT_TURNS,
-            max_chars_per_item=GROQ_MAX_CONTEXT_CHARS_PER_ITEM,
-        ),
-        max_tokens=GROQ_MAX_OUTPUT_TOKENS,
-    )
-
-    answer = (
-        r.choices[0].message.content
-        or ""
-    )
-
+    answer = r.choices[0].message.content or ""
     if not answer.strip():
-        raise RuntimeError(
-            f"Groq ({model}) mengembalikan jawaban kosong."
-        )
-
-    return answer, model
+        raise RuntimeError(f"Groq ({selected}) mengembalikan jawaban kosong.")
+    return answer, selected
 
 
 def _is_retryable_rate_limit(error_text):
