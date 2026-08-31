@@ -53,10 +53,7 @@ GEMINI_VIDEO_MODEL = os.getenv(
 )
 
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
-OPENROUTER_FREE_MODEL = os.getenv(
-    "OPENROUTER_FREE_MODEL",
-    "openrouter/free",
-)
+OPENROUTER_FREE_MODEL = "openrouter/free"
 
 NVIDIA_KEY = os.getenv("NVIDIA_API_KEY", "")
 NVIDIA_MODEL = os.getenv(
@@ -69,18 +66,6 @@ NVIDIA_BASE_URL = os.getenv(
 )
 NVIDIA_MAX_OUTPUT_TOKENS = int(
     os.getenv("NVIDIA_MAX_OUTPUT_TOKENS", "1536")
-)
-
-# ------------------------------------------------------------
-# MODEL CADANGAN TAMBAHAN (BARU)
-# ------------------------------------------------------------
-# Tidak dibaca dari env yang mungkin salah/sudah usang di hosting.
-# Ini hanya lapisan cadangan EKSTRA supaya chat tetap jalan walau
-# OPENROUTER_FREE_MODEL yang di-set lewat env sudah tidak valid
-# (model_not_found / dihapus provider).
-
-OPENROUTER_BACKUP_MODEL = (
-    "meta-llama/llama-3.3-70b-instruct:free"
 )
 
 POLLINATIONS_KEY = os.getenv(
@@ -428,7 +413,7 @@ openrouter = (
     OpenAI(
         api_key=OPENROUTER_KEY,
         base_url="https://openrouter.ai/api/v1",
-        timeout=15.0,
+        timeout=7.0,
         max_retries=0,
     )
     if OPENROUTER_KEY
@@ -439,7 +424,7 @@ nvidia = (
     OpenAI(
         api_key=NVIDIA_KEY,
         base_url=NVIDIA_BASE_URL,
-        timeout=15.0,
+        timeout=7.0,
         max_retries=0,
     )
     if NVIDIA_KEY
@@ -2466,8 +2451,7 @@ def chat_router(uid, text, ai_mode="auto", include_history=True, forced_task=Non
     providers = [
         ("⚡ NVIDIA", lambda: call_nvidia(uid, text, task, include_history=include_history)),
         ("👁️ Gemini", lambda: call_gemini(uid, text, task, include_history=include_history)),
-        ("🌐 OpenRouter Free", lambda: call_openrouter(uid, text, task, include_history=include_history)),
-        ("🌐 OpenRouter Cadangan", lambda: call_openrouter(uid, text, task, model=OPENROUTER_BACKUP_MODEL, include_history=include_history)),
+        ("🌐 OpenRouter Free", lambda: call_openrouter(uid, text, task, model="openrouter/free", include_history=include_history)),
     ]
 
     if ai_mode in NVIDIA_STYLE_TASK_MAP:
@@ -3766,8 +3750,7 @@ hasil material bukan pengganti desain engineer.
 
     if text.startswith("/fast"):
         set_chat_mode(uid, CHAT_MODE_FAST)
-        schedule_memory_save(uid)
-        await send_text(chat_id, "⚡ FAST MODE AKTIF\n\nChat tidak membaca memory GitHub sebelum menjawab.\nPrioritas: NVIDIA → Gemini → OpenRouter.\nMemory tetap dicatat dan disimpan di background.")
+        await send_text(chat_id, "⚡ FAST MODE AKTIF\n\nAI chat saja — tanpa membaca/menyimpan memory dan tanpa mengaktifkan tool.\nPrioritas gratis: NVIDIA → Gemini → OpenRouter FREE.")
         return
 
     if text.startswith("/agent"):
@@ -4292,8 +4275,9 @@ Jangan mengarang ukuran yang tidak terlihat.
             provider, model, task, ai_mode, attempts, elapsed
         )
         await send_text(chat_id, answer + "\n\n" + footer)
-        # Memory disimpan setelah jawaban dikirim, tanpa menahan response.
-        schedule_memory_save(uid)
+        # FAST benar-benar tanpa memory. Hanya AGENT yang menyimpan permanen.
+        if chat_mode == CHAT_MODE_AGENT:
+            schedule_memory_save(uid)
 
         log.info(
             "CHAT DONE | task=%s | provider=%s | model=%s | mode=%s | waktu=%s",

@@ -1,1 +1,1 @@
-"""DesignManufaktur Vercel API package."""
+"""DesignManufaktur API package."""
