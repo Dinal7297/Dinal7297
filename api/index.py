@@ -1,5 +1,5 @@
-# DESIGNMANUFAKTUR SUPER AI AGENT — FINAL ARCHITECTURE v7
-# Existing application preserved; policy layer added.
+# DESIGNMANUFAKTUR SUPER AI AGENT — FINAL ARCHITECTURE v9 FIXED
+# Existing application preserved; routing/mode fixes added.
 
 import asyncio
 import base64
@@ -536,7 +536,15 @@ MODEL_SELECTION_ENABLED=True
 EXPERT_ROUTING_ENABLED=True
 EXPERT_POLICY={"CHAT":["NVIDIA","GROQ","OPENROUTER_FREE","GEMINI"],"CODING":["NVIDIA_CODING","NVIDIA","GROQ","OPENROUTER_FREE","GEMINI"],"REASONING":["NVIDIA_REASONING","NVIDIA","GEMINI","GROQ","OPENROUTER_FREE"],"TECHNICAL":["NVIDIA","GEMINI","GROQ","OPENROUTER_FREE"],"CIVIL":["LOCAL_CIVIL","NVIDIA","GEMINI","GROQ","OPENROUTER_FREE"],"IMAGE":["GEMINI"],"VIDEO":["GEMINI"]}
 def v7_memory_allowed(mode): return str(mode).upper()=="AGENT"
-def v7_provider_allowed(provider): return (not FREE_ONLY_MODE) or str(provider).upper() in {"NVIDIA","NVIDIA_CODING","NVIDIA_REASONING","GROQ","OPENROUTER_FREE","GEMINI","LOCAL_CIVIL","LOCAL_CUTTING","POLLINATIONS"}
+def v7_provider_allowed(provider):
+    """FREE-ONLY guard. Provider names in the router are lowercase; normalize them."""
+    if not FREE_ONLY_MODE:
+        return True
+    p = str(provider).strip().lower()
+    return p in {
+        "nvidia", "groq", "gemini", "openrouter",
+        "local_civil", "local_cutting", "pollinations",
+    }
 
 def get_conversation_mode(uid):
     return user_conversation_mode.get(str(uid), "FAST")
@@ -2597,8 +2605,14 @@ def _transparent_error_reason(exc):
         return "TIMEOUT"
     if "model_not_found" in t or "model not found" in t or "does not exist" in t:
         return "MODEL TIDAK TERSEDIA"
+    if "400" in t or "bad request" in t or "invalid_argument" in t:
+        return "BAD REQUEST"
+    if "404" in t or "not found" in t:
+        return "ENDPOINT/MODEL TIDAK DITEMUKAN"
     if "422" in t or "validation" in t:
         return "VALIDATION"
+    if "billing" in t or "payment" in t or "insufficient" in t:
+        return "BILLING/QUOTA"
     return "ERROR"
 
 
@@ -2639,8 +2653,11 @@ def chat_router(uid, text):
             routes = [(p, None, None) for p in _auto_provider_order(task)]
         else:
             provider, model, effort, _label = cfg
-            fallback = ["nvidia", "groq", "openrouter", "gemini"]
-            routes = [(provider, model, effort)] + [(p, None, None) for p in fallback if p != provider]
+            # Manual selection = preferred provider, but fallback remains capability-aware.
+            expert_fallback = _auto_provider_order(task)
+            routes = [(provider, model, effort)] + [
+                (p, None, None) for p in expert_fallback if p != provider
+            ]
 
     attempts = []
     for provider_name, selected_model, effort in routes:
@@ -2660,7 +2677,7 @@ def chat_router(uid, text):
                 lambda p=provider_name, m=selected_model, e=effort: _provider_call(
                     p, uid, text, task, model=m, reasoning_effort=e
                 ),
-                retries=1,
+                retries=0,
             )
             if not answer.strip():
                 raise RuntimeError("Provider mengembalikan jawaban kosong.")
@@ -3636,7 +3653,7 @@ async def handle(update):
                     chat_id,
                     f"✅ Mode AI diubah ke: {label}\n\n"
                     "Mode ini menjadi AI utama. Jika gagal/limit, "
-                    "bot tetap otomatis pindah ke provider GRATIS lain.",
+                    "bot mencoba fallback sesuai kemampuan task dan FREE-ONLY policy.",
                 )
         return
 
@@ -3820,6 +3837,29 @@ hasil material bukan pengganti desain engineer.
             reset_msg,
         )
 
+        return
+
+    # ========================================================
+    # AI STATUS / DIAGNOSTICS
+    # ========================================================
+
+    if text.startswith("/ai_status") or text.startswith("/statusai"):
+        current = user_ai_mode.get(str(uid), "auto")
+        mode_conv = get_conversation_mode(uid)
+        msg = (
+            "🤖 AI STATUS\n\n"
+            f"🎛️ Conversation: {mode_conv}\n"
+            f"🎯 Model mode: {current.upper()}\n\n"
+            f"🟢 NVIDIA: {'READY' if nvidia else 'NO KEY'}\n"
+            f"⚡ Groq: {'READY' if groq else 'NO KEY'}\n"
+            f"👁️ Gemini: {'READY' if gemini else 'NO KEY'}\n"
+            f"🌐 OpenRouter FREE: {'READY' if openrouter else 'NO KEY'}\n\n"
+            "💰 FREE-ONLY GUARD: ON\n"
+            "🔀 Routing: EXPERT / capability-based\n"
+            "🧠 AGENT memory: GitHub\n"
+            "⚡ FAST memory: OFF"
+        )
+        await send_text(chat_id, msg)
         return
 
     # ========================================================
