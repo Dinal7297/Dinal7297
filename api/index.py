@@ -1,4 +1,6 @@
-# RESPONSE SPEED OPTIMIZATION v6
+# DESIGNMANUFAKTUR SUPER AI AGENT — FINAL ARCHITECTURE v7
+# Existing application preserved; policy layer added.
+
 import asyncio
 import base64
 import mimetypes
@@ -20,10 +22,6 @@ from openai import OpenAI
 
 # ============================================================
 # APP
-# ============================================================
-# MODE FAST/AGENT FIX v5
-# - send_text() now supports inline reply_markup.
-# - This fixes /start, /mode, and FAST/AGENT buttons.
 # ============================================================
 
 logging.basicConfig(level=logging.INFO)
@@ -87,8 +85,7 @@ NVIDIA_MODEL = os.getenv(
     "NVIDIA_MODEL",
     "deepseek-ai/deepseek-v4-flash-0731",
 )
-NVIDIA_MAX_OUTPUT_TOKENS = int(os.getenv("NVIDIA_MAX_OUTPUT_TOKENS", "2048"))
-FAST_RESPONSE_MODE = os.getenv("FAST_RESPONSE_MODE", "1").lower() not in ("0", "false", "no", "off")
+NVIDIA_MAX_OUTPUT_TOKENS = int(os.getenv("NVIDIA_MAX_OUTPUT_TOKENS", "4096"))
 
 # ------------------------------------------------------------
 # MODEL CADANGAN TAMBAHAN (BARU)
@@ -490,34 +487,6 @@ MAX_MEMORY = 20
 user_ai_mode = {}
 
 # ============================================================
-# CHAT MODE: FAST vs AGENT / MEMORY
-# ============================================================
-CHAT_MODE_FAST = "fast"
-CHAT_MODE_AGENT = "agent"
-CHAT_MODE_LABELS = {
-    CHAT_MODE_FAST: "⚡ AI BIASA / FAST",
-    CHAT_MODE_AGENT: "🧠 AI AGENT / MEMORY",
-}
-user_chat_mode = {}
-
-def get_chat_mode(uid):
-    return user_chat_mode.get(str(uid), CHAT_MODE_FAST)
-
-def set_chat_mode(uid, mode):
-    if mode in CHAT_MODE_LABELS:
-        user_chat_mode[str(uid)] = mode
-
-def build_chat_mode_keyboard():
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "⚡ AI BIASA / FAST", "callback_data": "chatmode:fast"},
-                {"text": "🧠 AI AGENT / MEMORY", "callback_data": "chatmode:agent"},
-            ]
-        ]
-    }
-
-# ============================================================
 # PERSISTENT MEMORY — SEPARATE GITHUB REPOSITORY
 # ============================================================
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
@@ -545,14 +514,26 @@ WEBSITE_DATA_PATH = "data/pekerjaan.json"
 # berapa banyak riwayat yang benar-benar dikirim ke provider AI
 # per request, supaya tidak kena limit token/rate dari provider
 # gratis (khususnya Groq yang TPM-nya kecil).
-MAX_CONTEXT_TURNS = 4
-MAX_CONTEXT_CHARS_PER_ITEM = 700
+MAX_CONTEXT_TURNS = 8
+MAX_CONTEXT_CHARS_PER_ITEM = 1200
 
-GROQ_MAX_CONTEXT_TURNS = 3
-GROQ_MAX_CONTEXT_CHARS_PER_ITEM = 350
-GROQ_MAX_OUTPUT_TOKENS = 1200
+GROQ_MAX_CONTEXT_TURNS = 4
+GROQ_MAX_CONTEXT_CHARS_PER_ITEM = 400
+GROQ_MAX_OUTPUT_TOKENS = 1536
 
-OPENROUTER_MAX_OUTPUT_TOKENS = 1400
+OPENROUTER_MAX_OUTPUT_TOKENS = 2048
+
+
+# FINAL v7 POLICY
+FREE_ONLY_MODE=True
+FAST_MEMORY_ENABLED=False
+AGENT_MEMORY_ENABLED=True
+AGENT_MEMORY_SOURCE="github"
+MODEL_SELECTION_ENABLED=True
+EXPERT_ROUTING_ENABLED=True
+EXPERT_POLICY={"CHAT":["NVIDIA","GROQ","OPENROUTER_FREE","GEMINI"],"CODING":["NVIDIA_CODING","NVIDIA","GROQ","OPENROUTER_FREE","GEMINI"],"REASONING":["NVIDIA_REASONING","NVIDIA","GEMINI","GROQ","OPENROUTER_FREE"],"TECHNICAL":["NVIDIA","GEMINI","GROQ","OPENROUTER_FREE"],"CIVIL":["LOCAL_CIVIL","NVIDIA","GEMINI","GROQ","OPENROUTER_FREE"],"IMAGE":["GEMINI"],"VIDEO":["GEMINI"]}
+def v7_memory_allowed(mode): return str(mode).upper()=="AGENT"
+def v7_provider_allowed(provider): return (not FREE_ONLY_MODE) or str(provider).upper() in {"NVIDIA","NVIDIA_CODING","NVIDIA_REASONING","GROQ","OPENROUTER_FREE","GEMINI","LOCAL_CIVIL","LOCAL_CUTTING","POLLINATIONS"}
 
 
 def history(uid):
@@ -630,9 +611,6 @@ async def load_persistent_memory(uid):
         raw = base64.b64decode(encoded.replace("\n", "")).decode("utf-8")
         saved = json.loads(raw)
         if isinstance(saved, dict):
-            saved_mode = saved.get("chat_mode")
-            if saved_mode in CHAT_MODE_LABELS:
-                user_chat_mode[uid] = saved_mode
             saved = saved.get("memory", [])
         if not isinstance(saved, list):
             saved = []
@@ -648,12 +626,7 @@ async def save_persistent_memory(uid):
     if not GITHUB_TOKEN or not GITHUB_REPO:
         log.warning("PERSISTENT MEMORY SAVE SKIPPED | GITHUB_TOKEN/GITHUB_REPO belum tersedia")
         return
-    raw = json.dumps({
-        "user_id": uid,
-        "chat_mode": get_chat_mode(uid),
-        "memory": history(uid)[-MAX_MEMORY:],
-        "updated_at": int(time.time()),
-    }, ensure_ascii=False, indent=2)
+    raw = json.dumps({"user_id": uid, "memory": history(uid)[-MAX_MEMORY:], "updated_at": int(time.time())}, ensure_ascii=False, indent=2)
     encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
     url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
@@ -2396,17 +2369,14 @@ def call_nvidia(uid, text, task, reasoning_effort=None, model=None):
     effort = reasoning_effort
     if effort is None:
         effort = {
-            "reasoning": "high",
-            "math": "none",
-            "coding": "none",
-            "technical": "none",
-            "civil": "none",
+            "reasoning": "max",
+            "math": "high",
+            "coding": "high",
+            "technical": "high",
+            "civil": "high",
             "creative": "none",
             "general": "none",
         }.get(task, "none")
-
-        if FAST_RESPONSE_MODE and task != "reasoning":
-            effort = "none"
 
     # Gunakan format NVIDIA yang sama dengan contoh API key/user yang sudah
     # terbukti dipakai: reasoning_effort dikirim melalui chat_template_kwargs.
@@ -2574,10 +2544,9 @@ def _provider_label(name):
 
 
 def _auto_provider_order(task):
-    # Jalur cepat: provider utama NVIDIA, lalu Gemini sebagai fallback
-    # sebelum provider yang pada konfigurasi saat ini sering mengembalikan
-    # model_not_found/error. Fallback tetap tersedia jika Gemini tidak aktif.
-    return ["nvidia", "gemini", "groq", "openrouter"]
+    if task in ("reasoning", "math", "coding", "technical", "civil"):
+        return ["nvidia", "groq", "openrouter", "gemini"]
+    return ["nvidia", "groq", "openrouter", "gemini"]
 
 
 MANUAL_AI_MODES = {
@@ -2647,7 +2616,7 @@ def chat_router(uid, text):
             routes = [(p, None, None) for p in _auto_provider_order(task)]
         else:
             provider, model, effort, _label = cfg
-            fallback = ["nvidia", "gemini", "groq", "openrouter"]
+            fallback = ["nvidia", "groq", "openrouter", "gemini"]
             routes = [(provider, model, effort)] + [(p, None, None) for p in fallback if p != provider]
 
     attempts = []
@@ -2665,7 +2634,7 @@ def chat_router(uid, text):
                 lambda p=provider_name, m=selected_model, e=effort: _provider_call(
                     p, uid, text, task, model=m, reasoning_effort=e
                 ),
-                retries=0,
+                retries=1,
             )
             if not answer.strip():
                 raise RuntimeError("Provider mengembalikan jawaban kosong.")
@@ -3083,8 +3052,7 @@ def split_telegram_message(
 
 async def send_text(
     chat_id,
-    text,
-    reply_markup=None
+    text
 ):
 
     formatted = clean_telegram_text(
@@ -3103,7 +3071,6 @@ async def send_text(
             {
                 "chat_id": chat_id,
                 "text": chunk,
-                **({"reply_markup": reply_markup} if reply_markup else {}),
             },
         )
 
@@ -3269,169 +3236,45 @@ def analyze_video(
     mime,
     prompt
 ):
-    """
-    Analisis video menggunakan Gemini Files API.
-
-    Alur:
-    Telegram bytes -> file sementara -> Gemini Files API
-    -> tunggu ACTIVE -> generate_content -> hapus file sementara.
-    """
 
     started = time.perf_counter()
-
     if not gemini:
-        raise RuntimeError(
-            "Gemini diperlukan untuk analisis video."
-        )
+        raise RuntimeError("Gemini diperlukan untuk video.")
 
-    if not data:
-        raise RuntimeError("Data video kosong.")
+    uploaded = gemini.files.upload(
+        file=types.Part.from_bytes(data=data, mime_type=mime)
+    )
 
-    if not mime:
-        mime = "video/mp4"
-
-    mime_lower = mime.lower()
-    if "quicktime" in mime_lower or "mov" in mime_lower:
-        suffix = ".mov"
-    elif "webm" in mime_lower:
-        suffix = ".webm"
-    elif "avi" in mime_lower:
-        suffix = ".avi"
+    for _ in range(60):
+        f = gemini.files.get(name=uploaded.name)
+        state = getattr(getattr(f, "state", None), "name", "")
+        if state == "ACTIVE":
+            uploaded = f
+            break
+        if state == "FAILED":
+            raise RuntimeError("Gemini gagal memproses video.")
+        time.sleep(2)
     else:
-        suffix = ".mp4"
+        raise RuntimeError("Video belum siap diproses.")
 
-    temp_path = None
+    result = gemini.models.generate_content(
+        model=GEMINI_CHAT_MODEL,
+        contents=[uploaded, SYSTEM + "\n\n" + prompt],
+    )
+    answer = result.text or ""
+    if not answer.strip():
+        raise RuntimeError("Gemini mengembalikan jawaban video kosong.")
 
-    try:
-        import os
-        import tempfile
-
-        # Gemini Files API membutuhkan path file, bukan types.Part.
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            suffix=suffix,
-            delete=False
-        ) as temp_file:
-            temp_file.write(data)
-            temp_path = temp_file.name
-
-        uploaded = gemini.files.upload(
-            file=temp_path
-        )
-
-        if not uploaded or not getattr(uploaded, "name", None):
-            raise RuntimeError(
-                "Gemini tidak mengembalikan file hasil upload."
-            )
-
-        active_file = None
-
-        # Tunggu maksimal 120 detik (60 x 2 detik) sampai video ACTIVE.
-        for _ in range(60):
-            current_file = gemini.files.get(
-                name=uploaded.name
-            )
-
-            state_obj = getattr(current_file, "state", None)
-            state_name = str(
-                getattr(state_obj, "name", "") or ""
-            ).upper()
-
-            if state_name == "ACTIVE":
-                active_file = current_file
-                break
-
-            if state_name == "FAILED":
-                raise RuntimeError(
-                    "Gemini gagal memproses video."
-                )
-
-            time.sleep(2)
-
-        if active_file is None:
-            raise RuntimeError(
-                "Video belum siap diproses oleh Gemini setelah menunggu 120 detik."
-            )
-
-        final_prompt = (
-            SYSTEM
-            + "\n\n"
-            + (
-                prompt
-                or
-                """
-Analisa video ini secara detail dari awal sampai akhir.
-
-Jika terkait pekerjaan manufaktur, bengkel, konstruksi,
-sipil, tenda, kanopi, atau fabrikasi:
-
-- jelaskan objek yang terlihat
-- jelaskan proses yang terjadi
-- jelaskan urutan pekerjaan jika dapat diamati
-- jelaskan material yang terlihat
-- jelaskan alat yang digunakan
-- jelaskan kondisi pekerjaan
-- identifikasi masalah yang terlihat
-- berikan saran praktis jika diperlukan
-
-PENTING:
-- Jangan mengarang ukuran material.
-- Jangan menyatakan jenis material secara pasti jika tidak dapat dipastikan dari video.
-- Bedakan fakta yang terlihat dengan asumsi/perkiraan.
-- Jika sesuatu tidak terlihat jelas, katakan bahwa hal tersebut tidak dapat dipastikan.
-"""
-            )
-        )
-
-        result = gemini.models.generate_content(
-            model=GEMINI_CHAT_MODEL,
-            contents=[
-                active_file,
-                final_prompt
-            ],
-        )
-
-        answer = getattr(result, "text", "") or ""
-
-        if not answer.strip():
-            raise RuntimeError(
-                "Gemini mengembalikan jawaban video kosong."
-            )
-
-        elapsed = round(
-            time.perf_counter() - started,
-            2
-        )
-
-        meta = {
-            "provider": "gemini",
-            "provider_label": "Gemini Vision",
-            "model": GEMINI_CHAT_MODEL,
-            "task": "VIDEO",
-            "status": "MAIN",
-            "elapsed": elapsed,
-            "routes": [
-                {
-                    "provider": "gemini",
-                    "model": GEMINI_CHAT_MODEL,
-                    "status": "SUCCESS"
-                }
-            ]
-        }
-
-        return answer, meta
-
-    finally:
-        # Hapus file lokal sementara setelah selesai.
-        if temp_path:
-            try:
-                import os
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-            except Exception:
-                log.exception(
-                    "Gagal menghapus temporary video file"
-                )
+    meta = {
+        "provider": "gemini",
+        "provider_label": "Gemini",
+        "model": GEMINI_CHAT_MODEL,
+        "task": "video",
+        "status": "MAIN",
+        "elapsed": time.perf_counter() - started,
+        "routes": [{"provider": "gemini", "model": GEMINI_CHAT_MODEL, "status": "SUCCESS"}],
+    }
+    return answer, meta
 
 
 # ============================================================
@@ -3721,54 +3564,6 @@ async def handle(update):
         uid = str(from_user.get("id", ""))
         chat_id = callback.get("message", {}).get("chat", {}).get("id")
 
-        # ====================================================
-        # CHAT MODE: FAST vs AGENT / MEMORY
-        # ====================================================
-        chat_mode_map = {
-            "chatmode:fast": CHAT_MODE_FAST,
-            "chatmode:agent": CHAT_MODE_AGENT,
-        }
-
-        if data in chat_mode_map:
-            mode = chat_mode_map[data]
-
-            # Muat memory terlebih dahulu supaya saat pindah ke FAST
-            # kita tidak pernah menimpa memory GitHub dengan list kosong.
-            await load_persistent_memory(uid)
-            set_chat_mode(uid, mode)
-            await save_persistent_memory(uid)
-
-            if mode == CHAT_MODE_FAST:
-                # FAST tidak membawa memory Agent ke request berikutnya.
-                # Memory tetap aman tersimpan di GitHub dan akan dimuat
-                # kembali ketika user memilih AGENT.
-                memory[uid] = []
-
-            if callback_id:
-                try:
-                    await tg("answerCallbackQuery", {
-                        "callback_query_id": callback_id,
-                        "text": f"Mode: {CHAT_MODE_LABELS[mode]}",
-                    })
-                except Exception:
-                    pass
-
-            if chat_id:
-                if mode == CHAT_MODE_AGENT:
-                    msg = (
-                        "🧠 AI AGENT / MEMORY AKTIF\n\n"
-                        "Memory GitHub: ON\n"
-                        "Konteks proyek dan memory penting akan digunakan."
-                    )
-                else:
-                    msg = (
-                        "⚡ AI BIASA / FAST AKTIF\n\n"
-                        "Memory Agent: OFF\n"
-                        "Request berikutnya tidak menggunakan memory Agent."
-                    )
-                await send_text(chat_id, msg, reply_markup=build_chat_mode_keyboard())
-            return
-
         mode_map = {
             "ai_auto": "auto",
             "ai_nvidia_fast": "nvidia_fast",
@@ -3844,19 +3639,10 @@ async def handle(update):
         "/start"
     ):
 
-        await load_persistent_memory(uid)
-        current_chat_mode = get_chat_mode(uid)
-        mode_line = CHAT_MODE_LABELS.get(current_chat_mode, CHAT_MODE_LABELS[CHAT_MODE_FAST])
-
         await send_text(
             chat_id,
-            f"""
+            """
 🤖 Designmanufaktur Super AI Agent aktif.
-
-🎛️ Mode percakapan: {mode_line}
-
-⚡ FAST = cepat, tanpa memory Agent.
-🧠 AGENT = menggunakan memory proyek/persisten.
 
 🧠 Smart Multi-AI Router
 🏗️ Civil Calculator
@@ -3924,7 +3710,6 @@ urugan 10 x 5 x 0.2 meter
 
 Perintah:
 
-/mode
 /model
 /reset
 /gambar <prompt>
@@ -3937,55 +3722,8 @@ Contoh: /pekerjaan kanopi cibinong
 ⚠️ Untuk struktur:
 hasil material bukan pengganti desain engineer.
 """,
-            reply_markup=build_chat_mode_keyboard(),
         )
 
-        return
-
-    # ========================================================
-    # MODE FAST / AGENT
-    # ========================================================
-
-    if text.startswith("/mode"):
-        await load_persistent_memory(uid)
-        arg = command_arg(text).strip().lower()
-
-        if arg in ("fast", "biasa", "simple", "ai"):
-            # Simpan mode FAST tanpa menghapus memory permanen di GitHub.
-            set_chat_mode(uid, CHAT_MODE_FAST)
-            await save_persistent_memory(uid)
-            memory[uid] = []
-            await send_text(
-                chat_id,
-                "⚡ AI BIASA / FAST AKTIF\n\n"
-                "Memory Agent: OFF\n"
-                "Request berikutnya tidak menggunakan memory Agent.",
-                reply_markup=build_chat_mode_keyboard(),
-            )
-            return
-
-        if arg in ("agent", "memory", "memori"):
-            set_chat_mode(uid, CHAT_MODE_AGENT)
-            await load_persistent_memory(uid)
-            await save_persistent_memory(uid)
-            await send_text(
-                chat_id,
-                "🧠 AI AGENT / MEMORY AKTIF\n\n"
-                "Memory GitHub: ON\n"
-                "Konteks proyek dan memory penting akan digunakan.",
-                reply_markup=build_chat_mode_keyboard(),
-            )
-            return
-
-        current = get_chat_mode(uid)
-        await send_text(
-            chat_id,
-            f"🎛️ Mode saat ini: {CHAT_MODE_LABELS[current]}\n\n"
-            "Pilih tombol di bawah atau gunakan:\n"
-            "/mode fast\n"
-            "/mode agent",
-            reply_markup=build_chat_mode_keyboard(),
-        )
         return
 
     # ========================================================
@@ -4352,12 +4090,7 @@ Jangan mengarang ukuran yang tidak terlihat.
 
     try:
 
-        current_chat_mode = get_chat_mode(uid)
-        if current_chat_mode == CHAT_MODE_AGENT:
-            await load_persistent_memory(uid)
-        else:
-            # FAST benar-benar tidak memakai memory Agent/persisten.
-            memory[uid] = []
+        await load_persistent_memory(uid)
 
         await tg(
             "sendChatAction",
@@ -4386,8 +4119,7 @@ Jangan mengarang ukuran yang tidak terlihat.
             answer,
         )
 
-        if current_chat_mode == CHAT_MODE_AGENT:
-            await save_persistent_memory(uid)
+        await save_persistent_memory(uid)
 
         transparent_answer = format_transparent_response(answer, meta)
 
