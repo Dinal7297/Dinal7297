@@ -450,6 +450,20 @@ nvidia = (
 memory = {}
 MAX_MEMORY = 100
 
+# Cache Agent memory sementara untuk menghindari request GitHub pada setiap pesan.
+# GitHub tetap menjadi sumber permanen; cache hanya mempercepat request berurutan.
+MEMORY_CACHE_TTL = int(os.getenv("MEMORY_CACHE_TTL", "180"))
+memory_loaded_at = {}
+
+# FAST mode: batasi waktu tunggu per provider agar langsung pindah ke provider berikutnya.
+FAST_PROVIDER_TIMEOUT = float(os.getenv("FAST_PROVIDER_TIMEOUT", "6"))
+FAST_HEDGE_DELAY = float(os.getenv("FAST_HEDGE_DELAY", "2.5"))
+FAST_OPENROUTER_TIMEOUT = float(os.getenv("FAST_OPENROUTER_TIMEOUT", "5"))
+
+# Dedup cepat di instance aktif. Untuk Agent, claim GitHub tetap dipakai sebagai lapisan persisten.
+_processed_updates = {}
+PROCESSED_UPDATE_TTL = 600
+
 # ============================================================
 # PEMILIHAN AI MANUAL + TRANSPARANSI (BARU — ADITIF)
 # ============================================================
@@ -648,23 +662,42 @@ def _memory_path(uid):
     return f"{GITHUB_MEMORY_DIR}/{str(uid)}.json"
 
 
-async def load_persistent_memory(uid):
+async def load_persistent_memory(uid, force=False):
     uid = str(uid)
+    now = time.time()
+
+    if (
+        not force
+        and uid in memory_loaded_at
+        and now - memory_loaded_at[uid] < MEMORY_CACHE_TTL
+    ):
+        return
+
     if not GITHUB_TOKEN or not GITHUB_REPO:
         memory.setdefault(uid, [])
+        memory_loaded_at[uid] = now
         return
+
     url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
-    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            response = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                url, headers=headers, params={"ref": GITHUB_BRANCH}
+            )
         if response.status_code == 404:
             memory[uid] = []
+            memory_loaded_at[uid] = now
             return
         response.raise_for_status()
         encoded = response.json().get("content", "")
         if not encoded:
             memory[uid] = []
+            memory_loaded_at[uid] = now
             return
         raw = base64.b64decode(encoded.replace("\n", "")).decode("utf-8")
         saved = json.loads(raw)
@@ -679,10 +712,12 @@ async def load_persistent_memory(uid):
         if not isinstance(saved, list):
             saved = []
         memory[uid] = saved[-MAX_MEMORY:]
+        memory_loaded_at[uid] = now
         log.info("PERSISTENT MEMORY LOAD OK | uid=%s | items=%s", uid, len(memory[uid]))
     except Exception as e:
         log.warning("PERSISTENT MEMORY LOAD FAILED | uid=%s | %s", uid, str(e)[:300])
         memory.setdefault(uid, [])
+        # Jangan cache kegagalan lama-lama; retry pada request Agent berikutnya.
 
 
 async def save_persistent_memory(uid):
@@ -705,6 +740,7 @@ async def save_persistent_memory(uid):
             saved = await client.put(url, headers=headers, json=body)
         if saved.status_code not in (200, 201):
             saved.raise_for_status()
+        memory_loaded_at[uid] = time.time()
         log.info("PERSISTENT MEMORY SAVE OK | uid=%s", uid)
     except Exception as e:
         log.warning("PERSISTENT MEMORY SAVE FAILED | uid=%s | %s", uid, str(e)[:300])
@@ -2515,6 +2551,153 @@ def _call_with_retry(fn, retries=1, base_delay=1.5):
 
 
 # ============================================================
+# FAST CHAT ROUTER — prioritas kecepatan dan stabilitas
+# ============================================================
+
+async def chat_router_fast(uid, text, ai_mode="auto"):
+    """
+    Jalur FAST: tidak membaca/menulis memory GitHub.
+
+    Untuk AUTO, NVIDIA dicoba terlebih dahulu. Jika NVIDIA belum selesai
+    dalam FAST_HEDGE_DELAY detik, Gemini langsung dimulai tanpa menunggu
+    NVIDIA selesai. Provider pertama yang berhasil memenangkan request.
+    Ini memangkas waktu tunggu tanpa mengubah sistem Agent.
+    """
+    start_time = time.time()
+    task = classify_task(text)
+
+    if task == "civil":
+        civil_result = civil_calculator(text)
+        if civil_result:
+            return (civil_result, "Civil Calculator", "Local Calculation Engine",
+                    task, [], round(time.time() - start_time, 2))
+
+    async def run_provider(provider_name, fn, timeout):
+        t0 = time.time()
+        try:
+            result = await asyncio.wait_for(asyncio.to_thread(fn), timeout=timeout)
+            answer, model = result
+            if not answer or not answer.strip():
+                raise RuntimeError("Provider mengembalikan jawaban kosong.")
+            return {
+                "provider": provider_name, "model": model, "answer": answer,
+                "status": "ok", "elapsed": time.time() - t0,
+            }
+        except asyncio.TimeoutError:
+            return {
+                "provider": provider_name, "model": None, "answer": None,
+                "status": "timeout", "error": f"timeout > {timeout:.1f}s",
+                "elapsed": time.time() - t0,
+            }
+        except Exception as e:
+            return {
+                "provider": provider_name, "model": None, "answer": None,
+                "status": "failed", "error": str(e)[:250],
+                "elapsed": time.time() - t0,
+            }
+
+    nvidia_fn = lambda: call_nvidia(uid, text, task, use_memory=False)
+    gemini_fn = lambda: call_gemini(uid, text, task, use_memory=False)
+    openrouter_fn = lambda: call_openrouter(uid, text, task, use_memory=False)
+
+    # AUTO / NVIDIA-style: NVIDIA dulu, Gemini mulai setelah hedge delay jika NVIDIA lambat.
+    if ai_mode in ("auto", "nvidia_fast", "nvidia_coding", "nvidia_technical", "nvidia_reasoning"):
+        first = asyncio.create_task(
+            run_provider("⚡ NVIDIA", nvidia_fn, FAST_PROVIDER_TIMEOUT)
+        )
+        await asyncio.sleep(min(FAST_HEDGE_DELAY, FAST_PROVIDER_TIMEOUT))
+
+        # Jika NVIDIA sudah sukses, jangan panggil provider lain.
+        if first.done():
+            result = first.result()
+            if result["status"] == "ok":
+                return (result["answer"], result["provider"], result["model"], task,
+                        [{"provider": result["provider"], "model": result["model"], "status": "ok"}],
+                        round(time.time() - start_time, 2))
+
+        # NVIDIA lambat/gagal -> Gemini langsung dimulai.
+        second = asyncio.create_task(
+            run_provider("👁️ Gemini", gemini_fn, FAST_PROVIDER_TIMEOUT)
+        )
+        attempts = []
+        pending = {first, second}
+
+        while pending:
+            done, pending = await asyncio.wait(
+                pending, return_when=asyncio.FIRST_COMPLETED
+            )
+            for completed in done:
+                result = completed.result()
+                item = {
+                    "provider": result["provider"],
+                    "model": result.get("model"),
+                    "status": result["status"],
+                }
+                if result.get("error"):
+                    item["error"] = result["error"]
+                attempts.append(item)
+
+                if result["status"] == "ok":
+                    # Hentikan penantian terhadap provider lain. Thread HTTP yang
+                    # sudah berjalan tidak mempengaruhi jawaban Telegram berikutnya.
+                    for task_obj in pending:
+                        task_obj.cancel()
+                    return (
+                        result["answer"], result["provider"], result["model"], task,
+                        attempts, round(time.time() - start_time, 2)
+                    )
+
+        # NVIDIA + Gemini gagal -> OpenRouter fallback.
+        third = await run_provider(
+            "🌐 OpenRouter Free", openrouter_fn, FAST_OPENROUTER_TIMEOUT
+        )
+        item = {
+            "provider": third["provider"],
+            "model": third.get("model"),
+            "status": third["status"],
+        }
+        if third.get("error"):
+            item["error"] = third["error"]
+        attempts.append(item)
+        if third["status"] == "ok":
+            return (
+                third["answer"], third["provider"], third["model"], task,
+                attempts, round(time.time() - start_time, 2)
+            )
+        raise RuntimeError(
+            "Semua provider FAST gagal. "
+            + "; ".join(
+                f"{x['provider']}: {x.get('error', x['status'])}"
+                for x in attempts
+            )
+        )
+
+    # Jika user memilih Gemini/OpenRouter secara manual, pilihan tetap dihormati,
+    # tetapi provider cadangan tetap tersedia agar FAST tidak buntu.
+    if ai_mode == "gemini":
+        providers = [("👁️ Gemini", gemini_fn, FAST_PROVIDER_TIMEOUT),
+                     ("⚡ NVIDIA", nvidia_fn, FAST_PROVIDER_TIMEOUT),
+                     ("🌐 OpenRouter Free", openrouter_fn, FAST_OPENROUTER_TIMEOUT)]
+    else:
+        providers = [("🌐 OpenRouter Free", openrouter_fn, FAST_OPENROUTER_TIMEOUT),
+                     ("⚡ NVIDIA", nvidia_fn, FAST_PROVIDER_TIMEOUT),
+                     ("👁️ Gemini", gemini_fn, FAST_PROVIDER_TIMEOUT)]
+
+    attempts = []
+    for name, fn, timeout in providers:
+        result = await run_provider(name, fn, timeout)
+        item = {"provider": name, "model": result.get("model"), "status": result["status"]}
+        if result.get("error"):
+            item["error"] = result["error"]
+        attempts.append(item)
+        if result["status"] == "ok":
+            return (result["answer"], name, result["model"], task, attempts,
+                    round(time.time() - start_time, 2))
+
+    raise RuntimeError("Semua provider FAST gagal.")
+
+
+# ============================================================
 # SMART CHAT ROUTER
 # ============================================================
 
@@ -3995,8 +4178,7 @@ async def handle_callback_query(callback_query):
                     pass
             return
         set_chat_mode(uid, mode)
-        # Persist hanya perubahan mode; FAST tidak memuat memory.
-        await save_persistent_memory(uid)
+        # FAST tidak perlu load memory. Konfirmasi tombol dikirim segera.
         if cq_id:
             try:
                 await tg("answerCallbackQuery", {"callback_query_id": cq_id, "text": f"Mode: {CHAT_MODE_LABELS[mode]}"})
@@ -4004,11 +4186,15 @@ async def handle_callback_query(callback_query):
                 pass
         if chat_id:
             if mode == CHAT_MODE_FAST:
-                msg = "⚡ AI BIASA / FAST AKTIF\n\nMemory Agent: OFF\nPercakapan ini tidak dibaca/disimpan sebagai memory Agent."
+                msg = "⚡ AI BIASA / FAST AKTIF\n\nMemory Agent: OFF\nTidak membaca/menyimpan memory Agent pada chat cepat."
+                await send_text(chat_id, msg, reply_markup=build_chat_mode_keyboard())
+                # Persist mode setelah konfirmasi dikirim; tidak menghambat feedback tombol.
+                await save_persistent_memory(uid)
             else:
-                await load_persistent_memory(uid)
+                await load_persistent_memory(uid, force=True)
                 msg = "🧠 AI AGENT AKTIF\n\nMemory GitHub: ON\nKonteks pekerjaan akan digunakan dan memory penting dapat disimpan."
-            await send_text(chat_id, msg, reply_markup=build_chat_mode_keyboard())
+                await send_text(chat_id, msg, reply_markup=build_chat_mode_keyboard())
+                await save_persistent_memory(uid)
         return
 
     if not data.startswith("aimode:"):
@@ -4223,8 +4409,9 @@ hasil material bukan pengganti desain engineer.
     # ========================================================
 
     if text.startswith("/mode"):
-        await load_persistent_memory(uid)
         arg = command_arg(text).strip().lower()
+        if arg not in ("fast", "biasa", "ai", "simple"):
+            await load_persistent_memory(uid)
         if arg in ("fast", "biasa", "ai", "simple"):
             set_chat_mode(uid, CHAT_MODE_FAST)
         elif arg in ("agent", "memory", "memori"):
@@ -4743,20 +4930,25 @@ Jangan mengarang ukuran yang tidak terlihat.
 
         ai_mode = get_ai_mode(uid)
 
-        (
-            answer,
-            provider,
-            model,
-            task,
-            attempts,
-            elapsed,
-        ) = await asyncio.to_thread(
-            chat_router,
-            uid,
-            text,
-            ai_mode,
-            chat_mode == CHAT_MODE_AGENT,
-        )
+        if chat_mode == CHAT_MODE_FAST:
+            (
+                answer, provider, model, task, attempts, elapsed
+            ) = await chat_router_fast(uid, text, ai_mode)
+        else:
+            (
+                answer,
+                provider,
+                model,
+                task,
+                attempts,
+                elapsed,
+            ) = await asyncio.to_thread(
+                chat_router,
+                uid,
+                text,
+                ai_mode,
+                True,
+            )
 
         if chat_mode == CHAT_MODE_AGENT:
             remember(uid, "user", text)
@@ -4924,11 +5116,33 @@ async def webhook_impl(
 
     update_id = update.get("update_id")
 
-    # Persistent/idempotent claim. The first request owns this update;
-    # Telegram retries are ignored.
-    if not await claim_telegram_update(update_id):
-        log.info("DUPLICATE UPDATE IGNORED | update_id=%s", update_id)
-        return {"ok": True, "duplicate": True}
+    # FAST tidak melakukan GitHub round-trip hanya untuk dedup.
+    # Selama request selesai cepat, Telegram tidak perlu retry.
+    # Agent memakai claim GitHub persisten karena prosesnya lebih panjang.
+    msg = update.get("message") or {}
+    cq = update.get("callback_query") or {}
+    uid_hint = str(
+        (msg.get("from") or {}).get("id")
+        or (cq.get("from") or {}).get("id")
+        or ""
+    )
+    is_agent_hint = get_chat_mode(uid_hint) == CHAT_MODE_AGENT
+
+    if is_agent_hint:
+        if not await claim_telegram_update(update_id):
+            log.info("DUPLICATE AGENT UPDATE IGNORED | update_id=%s", update_id)
+            return {"ok": True, "duplicate": True}
+    else:
+        now = time.time()
+        # bersihkan cache dedup yang kedaluwarsa
+        for k, ts in list(_processed_updates.items()):
+            if now - ts > PROCESSED_UPDATE_TTL:
+                _processed_updates.pop(k, None)
+        key = str(update_id)
+        if key in _processed_updates:
+            log.info("DUPLICATE FAST UPDATE IGNORED | update_id=%s", update_id)
+            return {"ok": True, "duplicate": True}
+        _processed_updates[key] = now
 
     try:
         # Process INSIDE the Vercel request. This is intentional.
