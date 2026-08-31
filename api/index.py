@@ -3564,41 +3564,68 @@ def command_arg(text):
 async def handle(update):
 
     # ========================================================
-    # INLINE MODEL PICKER CALLBACK
+    # INLINE CALLBACK HANDLER — FAST / AGENT + MODEL
     # ========================================================
+    # IMPORTANT: answerCallbackQuery FIRST so Telegram immediately
+    # acknowledges the button tap, even if GitHub/AI is slow.
     callback = update.get("callback_query")
     if callback:
         callback_id = callback.get("id")
-        data = callback.get("data", "")
-        from_user = callback.get("from", {})
+        data = str(callback.get("data", ""))
+        from_user = callback.get("from") or {}
         uid = str(from_user.get("id", ""))
-        chat_id = callback.get("message", {}).get("chat", {}).get("id")
+        chat_id = (callback.get("message") or {}).get("chat", {}).get("id")
 
-        # Conversation mode callbacks are separate from /model callbacks.
+        # Always acknowledge the Telegram button immediately.
+        if callback_id:
+            try:
+                await tg("answerCallbackQuery", {
+                    "callback_query_id": callback_id,
+                    "text": "⏳ Memproses pilihan...",
+                })
+            except Exception as e:
+                logging.warning("CALLBACK ACK FAILED: %s", e)
+
         conversation_map = {
             "conv_fast": "fast",
             "conv_agent": "agent",
         }
+
         if data in conversation_map:
             conv = conversation_map[data]
             user_conversation_mode[uid] = conv
-            if conv == "fast":
-                # Never carry Agent memory into FAST. Do not delete GitHub memory.
-                memory[uid] = []
-                label = "⚡ FAST — memory OFF"
-            else:
-                await load_persistent_memory(uid)
-                label = f"🧠 AGENT — GitHub memory ({len(history(uid))} item)"
-            if callback_id:
-                try:
-                    await tg("answerCallbackQuery", {
-                        "callback_query_id": callback_id,
-                        "text": f"Mode percakapan: {conv.upper()}",
-                    })
-                except Exception:
-                    pass
-            if chat_id:
-                await send_text(chat_id, f"✅ Mode percakapan: {label}")
+
+            try:
+                if conv == "fast":
+                    # FAST is strictly stateless. Do not delete GitHub memory.
+                    memory[uid] = []
+                    label = "⚡ FAST — memory OFF"
+                else:
+                    # Load GitHub memory before confirming AGENT mode.
+                    await asyncio.wait_for(
+                        load_persistent_memory(uid),
+                        timeout=12.0,
+                    )
+                    label = f"🧠 AGENT — GitHub memory ({len(history(uid))} item)"
+
+                if chat_id:
+                    await send_text(
+                        chat_id,
+                        f"✅ Mode percakapan diubah ke: {label}"
+                    )
+            except Exception as e:
+                logging.exception("CONVERSATION MODE CALLBACK ERROR")
+                # Keep the selected mode, but clearly report the memory issue.
+                if chat_id:
+                    if conv == "agent":
+                        await send_text(
+                            chat_id,
+                            "⚠️ AGENT dipilih, tetapi memory GitHub belum dapat dimuat. "
+                            "Mode tetap AGENT dan akan dicoba lagi pada pesan berikutnya.\n\n"
+                            f"Detail: {type(e).__name__}"
+                        )
+                    else:
+                        await send_text(chat_id, "✅ Mode percakapan: ⚡ FAST — memory OFF")
             return
 
         mode_map = {
@@ -3613,24 +3640,29 @@ async def handle(update):
             "ai_gemini": "gemini",
             "ai_openrouter": "openrouter",
         }
+
         if data in mode_map:
-            user_ai_mode[uid] = mode_map[data]
-            if callback_id:
-                try:
-                    await tg("answerCallbackQuery", {
-                        "callback_query_id": callback_id,
-                        "text": f"Mode AI: {mode_map[data].upper()}",
-                    })
-                except Exception:
-                    pass
+            selected = mode_map[data]
+            user_ai_mode[uid] = selected
+            label = (
+                "🔄 AUTO"
+                if selected == "auto"
+                else MANUAL_AI_MODES.get(
+                    selected,
+                    (None, None, None, selected),
+                )[3]
+            )
             if chat_id:
-                label = ("🔄 AUTO" if mode_map[data] == "auto" else MANUAL_AI_MODES.get(mode_map[data], (None, None, None, mode_map[data]))[3])
                 await send_text(
                     chat_id,
                     f"✅ Mode AI diubah ke: {label}\n\n"
                     "Mode ini menjadi AI utama. Jika gagal/limit, "
                     "bot tetap otomatis pindah ke provider GRATIS lain.",
                 )
+            return
+
+        # Unknown callback: acknowledge and stop instead of falling through.
+        logging.warning("UNKNOWN TELEGRAM CALLBACK: %s", data)
         return
 
     message = update.get(
