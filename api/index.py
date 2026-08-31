@@ -55,12 +55,8 @@ GEMINI_VIDEO_MODEL = os.getenv(
 OPENROUTER_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_FREE_MODEL = os.getenv(
     "OPENROUTER_FREE_MODEL",
-    "openai/gpt-oss-20b:free",
-)
-OPENROUTER_FREE_FALLBACKS = [
-    "openai/gpt-oss-20b:free",
     "openrouter/free",
-]
+)
 
 GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_FAST_MODEL = os.getenv(
@@ -75,18 +71,23 @@ GROQ_REASONING_MODEL = os.getenv(
 
 GROQ_CODING_MODEL = os.getenv(
     "GROQ_CODING_MODEL",
-    "openai/gpt-oss-20b"
+    "qwen/qwen3-32b"
 )
 
-# ------------------------------------------------------------
-# NVIDIA NIM / DeepSeek-V4-Flash-0731 (FREE TRIAL ENDPOINT)
-# ------------------------------------------------------------
+# ============================================================
+# NVIDIA NIM
+# ============================================================
 NVIDIA_KEY = os.getenv("NVIDIA_API_KEY", "")
 NVIDIA_MODEL = os.getenv(
     "NVIDIA_MODEL",
     "deepseek-ai/deepseek-v4-flash-0731",
 )
-NVIDIA_MAX_OUTPUT_TOKENS = int(os.getenv("NVIDIA_MAX_OUTPUT_TOKENS", "4096"))
+NVIDIA_MAX_OUTPUT_TOKENS = int(
+    os.getenv("NVIDIA_MAX_OUTPUT_TOKENS", "4096")
+)
+NVIDIA_TIMEOUT_SECONDS = float(
+    os.getenv("NVIDIA_TIMEOUT_SECONDS", "8")
+)
 
 # ------------------------------------------------------------
 # MODEL CADANGAN TAMBAHAN (BARU)
@@ -102,7 +103,9 @@ GROQ_BACKUP_MODEL_3 = "qwen/qwen3-32b"
 GROQ_BACKUP_MODEL_4 = "llama-3.1-8b-instant"
 GROQ_BACKUP_MODEL_5 = "gemma2-9b-it"
 
-OPENROUTER_BACKUP_MODEL = "openai/gpt-oss-20b:free"
+OPENROUTER_BACKUP_MODEL = (
+    "meta-llama/llama-3.3-70b-instruct:free"
+)
 
 POLLINATIONS_KEY = os.getenv(
     "POLLINATIONS_API_KEY",
@@ -439,13 +442,6 @@ JANGAN PERNAH menampilkan:
 # AI CLIENTS
 # ============================================================
 
-# Timeout eksplisit per-provider (detik). Sebelumnya Groq & OpenRouter
-# tidak diberi timeout sama sekali sehingga bisa hang lama mengikuti
-# default SDK OpenAI (ratusan detik) -> ini penyebab response kadang
-# >100 detik. NVIDIA sudah punya timeout=8.0 sejak awal.
-GROQ_TIMEOUT_SECONDS = float(os.getenv("GROQ_TIMEOUT_SECONDS", "12"))
-OPENROUTER_TIMEOUT_SECONDS = float(os.getenv("OPENROUTER_TIMEOUT_SECONDS", "12"))
-
 gemini = (
     genai.Client(api_key=GEMINI_KEY)
     if GEMINI_KEY
@@ -456,8 +452,6 @@ openrouter = (
     OpenAI(
         api_key=OPENROUTER_KEY,
         base_url="https://openrouter.ai/api/v1",
-        timeout=OPENROUTER_TIMEOUT_SECONDS,
-        max_retries=0,
     )
     if OPENROUTER_KEY
     else None
@@ -467,7 +461,7 @@ groq = (
     OpenAI(
         api_key=GROQ_KEY,
         base_url="https://api.groq.com/openai/v1",
-        timeout=GROQ_TIMEOUT_SECONDS,
+        timeout=float(os.getenv("GROQ_TIMEOUT_SECONDS", "12")),
         max_retries=0,
     )
     if GROQ_KEY
@@ -478,7 +472,7 @@ nvidia = (
     OpenAI(
         api_key=NVIDIA_KEY,
         base_url="https://integrate.api.nvidia.com/v1",
-        timeout=8.0,
+        timeout=NVIDIA_TIMEOUT_SECONDS,
         max_retries=0,
     )
     if NVIDIA_KEY
@@ -487,35 +481,25 @@ nvidia = (
 
 
 # ============================================================
-# MEMORY
+# MEMORY + CONVERSATION MODE
 # ============================================================
 
 memory = {}
 MAX_MEMORY = 200
-
-# ============================================================
-# GEMINI PRIMARY + 24H COOLDOWN
-# ============================================================
-# Gemini menjadi provider utama untuk AUTO chat. Jika Gemini mengalami
-# timeout atau quota/rate-limit habis, Gemini dinonaktifkan 24 jam dan
-# router langsung pindah ke provider gratis berikutnya. Status cooldown
-# disimpan di GitHub agar tidak hilang ketika instance Vercel restart.
-GEMINI_COOLDOWN_SECONDS = 24 * 60 * 60
-GEMINI_HEALTH_PATH = "system/gemini_health.json"
-_gemini_cooldown_until = 0.0
-_gemini_health_loaded = False
-
-
-# Persistent GitHub memory is intentionally larger than the LLM context.
-# The model only receives a small recent window, while AGENT can reload
-# the complete stored history (up to this safety cap) after every redeploy.
-
-# Mode AI per pengguna: auto / nvidia / groq / gemini / openrouter
+user_conversation_mode = {}
 user_ai_mode = {}
 
-# Conversation mode is deliberately separate from AI model selection.
-# FAST = stateless; AGENT = persistent GitHub memory.
-user_conversation_mode = {}
+MANUAL_AI_MODES = {
+    "nvidia_fast": ("nvidia", NVIDIA_MODEL, None, "🟢 NVIDIA Fast"),
+    "nvidia_coding": ("nvidia", NVIDIA_MODEL, None, "💻 NVIDIA Coding"),
+    "nvidia_technical": ("nvidia", NVIDIA_MODEL, None, "🔧 NVIDIA Technical"),
+    "nvidia_reasoning": ("nvidia", NVIDIA_MODEL, None, "🧠 NVIDIA Reasoning"),
+    "groq_fast": ("groq", GROQ_FAST_MODEL, None, "⚡ Groq Fast"),
+    "groq_coding": ("groq", GROQ_CODING_MODEL, None, "💻 Groq Coding"),
+    "groq_reasoning": ("groq", GROQ_REASONING_MODEL, None, "🧠 Groq Reasoning"),
+    "gemini": ("gemini", GEMINI_CHAT_MODEL, None, "👁️ Gemini"),
+    "openrouter": ("openrouter", OPENROUTER_FREE_MODEL, None, "🌐 OpenRouter FREE"),
+}
 
 # ============================================================
 # PERSISTENT MEMORY — SEPARATE GITHUB REPOSITORY
@@ -553,88 +537,6 @@ GROQ_MAX_CONTEXT_CHARS_PER_ITEM = 400
 GROQ_MAX_OUTPUT_TOKENS = 1536
 
 OPENROUTER_MAX_OUTPUT_TOKENS = 2048
-
-
-def _gemini_health_url():
-    return f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{GEMINI_HEALTH_PATH}"
-
-
-def _github_headers():
-    return {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
-
-def _load_gemini_health_once():
-    global _gemini_health_loaded, _gemini_cooldown_until
-    if _gemini_health_loaded:
-        return
-    _gemini_health_loaded = True
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        return
-    try:
-        with httpx.Client(timeout=5) as client:
-            r = client.get(_gemini_health_url(), headers=_github_headers(), params={"ref": GITHUB_BRANCH})
-        if r.status_code == 404:
-            return
-        r.raise_for_status()
-        payload = r.json()
-        encoded = payload.get("content", "")
-        if encoded:
-            data = json.loads(base64.b64decode(encoded.replace("\n", "")).decode("utf-8"))
-            _gemini_cooldown_until = float(data.get("disabled_until", 0) or 0)
-    except Exception:
-        log.warning("GEMINI HEALTH LOAD FAILED; using local health state", exc_info=True)
-
-
-def _gemini_disabled():
-    _load_gemini_health_once()
-    return time.time() < _gemini_cooldown_until
-
-
-def _save_gemini_cooldown(reason):
-    global _gemini_cooldown_until
-    _gemini_cooldown_until = time.time() + GEMINI_COOLDOWN_SECONDS
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-        return
-    try:
-        url = _gemini_health_url()
-        with httpx.Client(timeout=5) as client:
-            current = client.get(url, headers=_github_headers(), params={"ref": GITHUB_BRANCH})
-            sha = None
-            if current.status_code == 200:
-                body = current.json()
-                sha = body.get("sha")
-            elif current.status_code != 404:
-                current.raise_for_status()
-            raw = json.dumps({
-                "provider": "gemini",
-                "disabled_until": int(_gemini_cooldown_until),
-                "reason": reason,
-                "updated_at": int(time.time()),
-            }, ensure_ascii=False, indent=2)
-            body = {
-                "message": "health: Gemini cooldown 24h",
-                "content": base64.b64encode(raw.encode()).decode("ascii"),
-                "branch": GITHUB_BRANCH,
-            }
-            if sha:
-                body["sha"] = sha
-            saved = client.put(url, headers=_github_headers(), json=body)
-            saved.raise_for_status()
-    except Exception:
-        log.warning("GEMINI HEALTH SAVE FAILED; cooldown remains local", exc_info=True)
-
-
-def _gemini_mark_failure(exc):
-    reason = _transparent_error_reason(exc)
-    # Habis quota/rate-limit atau timeout = cooldown 24 jam.
-    if reason in {"TIMEOUT", "RATE LIMIT/QUOTA"}:
-        _save_gemini_cooldown(reason)
-        return True
-    return False
 
 
 def history(uid):
@@ -692,136 +594,59 @@ def _memory_path(uid):
 
 
 async def load_persistent_memory(uid):
-    """Load the user's complete persistent memory from GitHub for AGENT mode."""
     uid = str(uid)
     if not GITHUB_TOKEN or not GITHUB_REPO:
         memory.setdefault(uid, [])
-        raise RuntimeError("GITHUB_TOKEN atau GITHUB_REPO belum tersedia")
-
+        return
     url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
+    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             response = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
-
         if response.status_code == 404:
-            # A new AGENT user simply starts with an empty persistent store.
             memory[uid] = []
-            log.info("PERSISTENT MEMORY LOAD: no file yet | uid=%s", uid)
-            return 0
-
+            return
         response.raise_for_status()
         encoded = response.json().get("content", "")
         if not encoded:
             memory[uid] = []
-            return 0
-
+            return
         raw = base64.b64decode(encoded.replace("\n", "")).decode("utf-8")
         saved = json.loads(raw)
         if isinstance(saved, dict):
             saved = saved.get("memory", [])
         if not isinstance(saved, list):
             saved = []
-
-        # Preserve the whole persistent store up to the explicit safety cap.
         memory[uid] = saved[-MAX_MEMORY:]
         log.info("PERSISTENT MEMORY LOAD OK | uid=%s | items=%s", uid, len(memory[uid]))
-        return len(memory[uid])
-
-    except Exception:
-        log.exception("PERSISTENT MEMORY LOAD FAILED | uid=%s", uid)
-        raise
-
-
-def _merge_memory_items(remote_items, local_items):
-    """Merge GitHub + local memory without duplicating identical entries."""
-    merged = []
-    seen = set()
-
-    for item in list(remote_items or []) + list(local_items or []):
-        if not isinstance(item, dict):
-            continue
-        role = str(item.get("role", ""))
-        content = str(item.get("content", ""))
-        key = (role, content)
-        if key in seen:
-            continue
-        seen.add(key)
-        merged.append({"role": role or "user", "content": content})
-
-    return merged[-MAX_MEMORY:]
+    except Exception as e:
+        log.warning("PERSISTENT MEMORY LOAD FAILED | uid=%s | %s", uid, str(e)[:300])
+        memory.setdefault(uid, [])
 
 
 async def save_persistent_memory(uid):
-    """Atomically-ish update the user's GitHub memory and keep remote history."""
     uid = str(uid)
     if not GITHUB_TOKEN or not GITHUB_REPO:
-        raise RuntimeError("GITHUB_TOKEN atau GITHUB_REPO belum tersedia")
-
+        log.warning("PERSISTENT MEMORY SAVE SKIPPED | GITHUB_TOKEN/GITHUB_REPO belum tersedia")
+        return
+    raw = json.dumps({"user_id": uid, "memory": history(uid)[-MAX_MEMORY:], "updated_at": int(time.time())}, ensure_ascii=False, indent=2)
+    encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
     url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-    }
-
+    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             current = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
-
-            remote_items = []
-            sha = None
+            body = {"message": f"memory: update {uid}", "content": encoded, "branch": GITHUB_BRANCH}
             if current.status_code == 200:
-                payload = current.json()
-                sha = payload.get("sha")
-                encoded_remote = payload.get("content", "")
-                if encoded_remote:
-                    remote_raw = base64.b64decode(encoded_remote.replace("\n", "")).decode("utf-8")
-                    remote_saved = json.loads(remote_raw)
-                    if isinstance(remote_saved, dict):
-                        remote_saved = remote_saved.get("memory", [])
-                    if isinstance(remote_saved, list):
-                        remote_items = remote_saved
+                body["sha"] = current.json().get("sha")
             elif current.status_code != 404:
                 current.raise_for_status()
-
-            merged = _merge_memory_items(remote_items, history(uid))
-            # Keep local cache synchronized with the actual GitHub document.
-            memory[uid] = merged
-
-            raw = json.dumps(
-                {
-                    "user_id": uid,
-                    "memory": merged,
-                    "updated_at": int(time.time()),
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
-            body = {
-                "message": f"memory: update {uid}",
-                "content": encoded,
-                "branch": GITHUB_BRANCH,
-            }
-            if sha:
-                body["sha"] = sha
-
             saved = await client.put(url, headers=headers, json=body)
-            if saved.status_code not in (200, 201):
-                saved.raise_for_status()
-
-        log.info("PERSISTENT MEMORY SAVE OK | uid=%s | items=%s", uid, len(memory[uid]))
-        return len(memory[uid])
-
-    except Exception:
-        log.exception("PERSISTENT MEMORY SAVE FAILED | uid=%s", uid)
-        raise
+        if saved.status_code not in (200, 201):
+            saved.raise_for_status()
+        log.info("PERSISTENT MEMORY SAVE OK | uid=%s", uid)
+    except Exception as e:
+        log.warning("PERSISTENT MEMORY SAVE FAILED | uid=%s | %s", uid, str(e)[:300])
 
 
 # ============================================================
@@ -1081,8 +906,6 @@ Buat hasil yang siap digunakan,
 praktis, menarik, dan sesuai tujuan.
 """,
 
-        "memory": "Pertanyaan tentang memory/proyek tersimpan. Gunakan memory yang diberikan dan jangan mengarang data.",
-
         "general": """
 TUGAS UMUM.
 
@@ -1091,16 +914,19 @@ Jawab langsung, jelas, dan berguna.
 
     }.get(task, "")
 
+    mode = user_conversation_mode.get(str(uid), "fast")
+    context = []
+    if mode == "agent":
+        context = _trim_history_for_context(
+            uid, max_turns, max_chars_per_item
+        )
+
     return [
         {
             "role": "system",
             "content": SYSTEM + "\n\n" + task_hint,
         }
-    ] + _trim_history_for_context(
-        uid,
-        max_turns,
-        max_chars_per_item,
-    ) + [
+    ] + context + [
         {
             "role": "user",
             "content": text,
@@ -2389,16 +2215,6 @@ def classify_task(text):
         "copywriting",
     ]
 
-    # Memory/general questions must win over broad technical keywords.
-    memory_keywords = [
-        "nama proyek saya", "ukuran proyek saya", "data proyek saya",
-        "proyek saya", "ingat", "ingatkah", "apa yang saya simpan",
-        "apa yang tersimpan", "memori", "memory", "sebelumnya",
-        "riwayat proyek", "data sebelumnya", "apa nama proyek",
-    ]
-    if any(x in t for x in memory_keywords):
-        return "memory"
-
     if any(x in t for x in coding):
         return "coding"
 
@@ -2425,39 +2241,46 @@ def classify_task(text):
 # ============================================================
 
 def call_openrouter(uid, text, task, model=None):
+
     if not openrouter:
-        raise RuntimeError("OPENROUTER_API_KEY belum tersedia.")
+        raise RuntimeError(
+            "OPENROUTER_API_KEY belum tersedia."
+        )
 
-    candidates = []
-    if model:
-        candidates.append(model)
-    candidates.extend(OPENROUTER_FREE_FALLBACKS)
+    selected = model or OPENROUTER_FREE_MODEL
 
-    # Deduplicate while preserving order.
-    candidates = list(dict.fromkeys(candidates))
-    last_error = None
+    r = openrouter.chat.completions.create(
+        model=selected,
+        messages=build_messages(
+            uid,
+            text,
+            task
+        ),
+        max_tokens=OPENROUTER_MAX_OUTPUT_TOKENS,
+        extra_headers={
+            "HTTP-Referer":
+                "https://designmanufaktur.vercel.app",
+            "X-Title":
+                "Designmanufaktur Super AI Agent",
+        },
+    )
 
-    for selected in candidates:
-        try:
-            r = openrouter.chat.completions.create(
-                model=selected,
-                messages=build_messages(uid, text, task),
-                max_tokens=OPENROUTER_MAX_OUTPUT_TOKENS,
-                extra_headers={
-                    "HTTP-Referer": "https://designmanufaktur.vercel.app",
-                    "X-Title": "Designmanufaktur Super AI Agent",
-                },
-            )
-            answer = r.choices[0].message.content or ""
-            if not answer.strip():
-                raise RuntimeError(f"OpenRouter ({selected}) mengembalikan jawaban kosong.")
-            return answer, (getattr(r, "model", None) or selected)
-        except Exception as e:
-            last_error = e
-            # Hanya lanjut ke kandidat FREE berikutnya jika model/endpoint gagal.
-            continue
+    answer = (
+        r.choices[0].message.content
+        or ""
+    )
 
-    raise RuntimeError(f"OpenRouter FREE gagal: {last_error}")
+    if not answer.strip():
+        raise RuntimeError(
+            f"OpenRouter ({selected}) mengembalikan jawaban kosong."
+        )
+
+    selected_model = (
+        getattr(r, "model", None)
+        or selected
+    )
+
+    return answer, selected_model
 
 
 # ============================================================
@@ -2465,180 +2288,149 @@ def call_openrouter(uid, text, task, model=None):
 # ============================================================
 
 def call_gemini(uid, text, task):
-    """Gemini PRIMARY: satu percobaan saja. Jika gagal, router eksternal fallback.
-    Ini sengaja tidak mencoba model Gemini kedua agar aturan cooldown 24 jam
-    benar-benar berlaku ketika Gemini primary timeout/quota habis.
-    """
-    if not GEMINI_KEY:
-        raise RuntimeError("GEMINI_API_KEY belum tersedia.")
+
+    if not gemini:
+        raise RuntimeError(
+            "GEMINI_API_KEY belum tersedia."
+        )
 
     task_hint = {
-        "coding": "Berikan kode yang dapat dijalankan.",
-        "reasoning": "Analisis masalah secara teliti sebelum kesimpulan.",
-        "technical": "Gunakan pertimbangan teknik dan manufaktur yang praktis.",
-        "civil": "Gunakan perhitungan sipil secara teliti. Jangan mengarang data. Jika data belum diberikan, nyatakan data belum ditentukan. Bedakan estimasi material dengan desain struktur.",
-        "math": "Hitung secara teliti dan tunjukkan asumsi.",
-        "creative": "Buat hasil kreatif yang siap digunakan.",
-        "memory": "Gunakan memory/proyek yang tersedia dan jangan mengarang data yang tidak tersimpan.",
-        "general": "Jawab langsung dan jelas.",
+
+        "coding":
+            "Berikan kode yang dapat dijalankan.",
+
+        "reasoning":
+            "Analisis masalah secara teliti sebelum kesimpulan.",
+
+        "technical":
+            "Gunakan pertimbangan teknik dan manufaktur yang praktis.",
+
+        "civil":
+            """
+Gunakan perhitungan sipil secara teliti.
+
+Jangan mengarang data.
+Jika data belum diberikan, nyatakan data belum ditentukan.
+
+Bedakan:
+estimasi material
+dengan
+desain struktur.
+
+Untuk struktur:
+jangan menyatakan aman tanpa perhitungan engineering.
+""",
+
+        "math":
+            "Hitung secara teliti dan tunjukkan asumsi.",
+
+        "creative":
+            "Buat hasil kreatif yang siap digunakan.",
+
+        "general":
+            "Jawab langsung dan jelas.",
+
     }.get(task, "")
 
-    prompt = SYSTEM + "\n\n" + task_hint + "\n\n"
-    for m in _trim_history_for_context(uid):
-        prompt += f"{m['role']}: {m['content']}\n"
-    prompt += f"user: {text}"
-
-    selected_model = GEMINI_CHAT_MODEL or "gemini-3.6-flash"
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": 2048},
-    }
-    with httpx.Client(timeout=12.0) as client:
-        resp = client.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent",
-            params={"key": GEMINI_KEY},
-            json=payload,
-        )
-    if resp.status_code >= 400:
-        raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:300]}")
-    data = resp.json()
-    candidates = data.get("candidates") or []
-    answer = ""
-    if candidates:
-        parts = candidates[0].get("content", {}).get("parts", [])
-        answer = "".join(p.get("text", "") for p in parts if isinstance(p, dict))
-    if not answer.strip():
-        raise RuntimeError("Gemini mengembalikan jawaban kosong.")
-    return answer, selected_model
-
-
-# ============================================================
-# NVIDIA NIM / DEEPSEEK V4 FLASH
-# ============================================================
-
-def call_nvidia(uid, text, task, reasoning_effort=None, model=None):
-
-    if not nvidia:
-        raise RuntimeError("NVIDIA_API_KEY belum tersedia.")
-
-    effort = reasoning_effort
-    if effort is None:
-        effort = {
-            "reasoning": "max",
-            "math": "high",
-            "coding": "high",
-            "technical": "high",
-            "civil": "high",
-            "creative": "none",
-            "general": "none",
-        }.get(task, "none")
-
-    # Gunakan format NVIDIA yang sama dengan contoh API key/user yang sudah
-    # terbukti dipakai: reasoning_effort dikirim melalui chat_template_kwargs.
-    # Ini sengaja tidak mengubah provider lain.
-    r = nvidia.chat.completions.create(
-        model=(model or NVIDIA_MODEL),
-        messages=build_messages(
-            uid,
-            text,
-            task,
-            max_turns=MAX_CONTEXT_TURNS,
-            max_chars_per_item=MAX_CONTEXT_CHARS_PER_ITEM,
-        ),
-        temperature=1,
-        top_p=0.95,
-        max_tokens=NVIDIA_MAX_OUTPUT_TOKENS,
-        extra_body={
-            "chat_template_kwargs": {
-                "thinking": effort != "none",
-                "reasoning_effort": effort,
-            }
-        },
-        stream=False,
+    prompt = (
+        SYSTEM
+        + "\n\n"
+        + task_hint
+        + "\n\n"
     )
 
-    message = r.choices[0].message
-    answer = getattr(message, "content", None) or ""
+    for m in _trim_history_for_context(uid):
+
+        prompt += (
+            f"{m['role']}: "
+            f"{m['content']}\n"
+        )
+
+    prompt += f"user: {text}"
+
+    r = gemini.models.generate_content(
+        model=GEMINI_CHAT_MODEL,
+        contents=prompt,
+    )
+
+    answer = r.text or ""
 
     if not answer.strip():
         raise RuntimeError(
-            f"NVIDIA ({model or NVIDIA_MODEL}) mengembalikan jawaban kosong."
+            "Gemini mengembalikan jawaban kosong."
         )
 
-    return answer, (model or NVIDIA_MODEL)
+    return answer, GEMINI_CHAT_MODEL
+
+
+# ============================================================
+# NVIDIA
+# ============================================================
+
+def call_nvidia(uid, text, task, model=None):
+    if not nvidia:
+        raise RuntimeError("NVIDIA_API_KEY belum tersedia.")
+
+    model = model or NVIDIA_MODEL
+    r = nvidia.chat.completions.create(
+        model=model,
+        messages=build_messages(uid, text, task),
+        max_tokens=NVIDIA_MAX_OUTPUT_TOKENS,
+    )
+    answer = r.choices[0].message.content or ""
+    if not answer.strip():
+        raise RuntimeError("NVIDIA mengembalikan jawaban kosong.")
+    return answer, getattr(r, "model", None) or model
 
 
 # ============================================================
 # GROQ
 # ============================================================
 
-def _groq_available_models():
-    if not groq:
-        return set()
-    try:
-        data = groq.models.list()
-        items = getattr(data, "data", None) or []
-        return {getattr(x, "id", "") for x in items if getattr(x, "id", None)}
-    except Exception:
-        return set()
-
-
-def _resolve_groq_model(task, requested=None):
-    available = _groq_available_models()
-    preferred = []
-    if requested:
-        preferred.append(requested)
-    if task == "coding":
-        preferred += ["openai/gpt-oss-20b", "openai/gpt-oss-120b"]
-    elif task in ("reasoning", "math"):
-        preferred += ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
-    else:
-        preferred += ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "llama-3.1-8b-instant"]
-    preferred += [GROQ_BACKUP_MODEL_1, GROQ_BACKUP_MODEL_2, GROQ_BACKUP_MODEL_4]
-    preferred = list(dict.fromkeys(preferred))
-    if available:
-        for candidate in preferred:
-            if candidate in available:
-                return candidate
-        raise RuntimeError("Groq tidak memiliki model teks yang kompatibel dari daftar saat ini.")
-    return preferred[0]
-
-
 def call_groq(uid, text, task, model=None):
+
     if not groq:
-        raise RuntimeError("GROQ_API_KEY belum tersedia.")
-
-    selected = _resolve_groq_model(task, model)
-    try:
-        r = groq.chat.completions.create(
-            model=selected,
-            messages=build_messages(
-                uid, text, task,
-                max_turns=GROQ_MAX_CONTEXT_TURNS,
-                max_chars_per_item=GROQ_MAX_CONTEXT_CHARS_PER_ITEM,
-            ),
-            max_tokens=GROQ_MAX_OUTPUT_TOKENS,
+        raise RuntimeError(
+            "GROQ_API_KEY belum tersedia."
         )
-    except Exception as e:
-        # Refresh model list once in case the provider changed its catalog.
-        refreshed = _resolve_groq_model(task, None)
-        if refreshed == selected:
-            raise
-        r = groq.chat.completions.create(
-            model=refreshed,
-            messages=build_messages(
-                uid, text, task,
-                max_turns=GROQ_MAX_CONTEXT_TURNS,
-                max_chars_per_item=GROQ_MAX_CONTEXT_CHARS_PER_ITEM,
-            ),
-            max_tokens=GROQ_MAX_OUTPUT_TOKENS,
-        )
-        selected = refreshed
 
-    answer = r.choices[0].message.content or ""
+    if not model:
+
+        if task == "coding":
+            model = GROQ_CODING_MODEL
+
+        elif task in (
+            "reasoning",
+            "math",
+        ):
+            model = GROQ_REASONING_MODEL
+
+        else:
+            model = GROQ_FAST_MODEL
+
+    r = groq.chat.completions.create(
+        model=model,
+        messages=build_messages(
+            uid,
+            text,
+            task,
+            max_turns=GROQ_MAX_CONTEXT_TURNS,
+            max_chars_per_item=GROQ_MAX_CONTEXT_CHARS_PER_ITEM,
+        ),
+        max_tokens=GROQ_MAX_OUTPUT_TOKENS,
+    )
+
+    answer = (
+        r.choices[0].message.content
+        or ""
+    )
+
     if not answer.strip():
-        raise RuntimeError(f"Groq ({selected}) mengembalikan jawaban kosong.")
-    return answer, selected
+        raise RuntimeError(
+            f"Groq ({model}) mengembalikan jawaban kosong."
+        )
+
+    return answer, model
 
 
 def _is_retryable_rate_limit(error_text):
@@ -2690,137 +2482,92 @@ def _call_with_retry(fn, retries=1, base_delay=1.5):
 # SMART CHAT ROUTER
 # ============================================================
 
-def _provider_available(name):
-    return {
-        "nvidia": bool(nvidia),
-        "groq": bool(groq),
-        "gemini": bool(gemini),
-        "openrouter": bool(openrouter),
-    }.get(name, False)
-
-
-def _provider_call(name, uid, text, task, model=None, reasoning_effort=None):
-    if name == "nvidia":
-        return call_nvidia(uid, text, task, reasoning_effort=reasoning_effort, model=model)
-    if name == "groq":
-        return call_groq(uid, text, task, model=model)
-    if name == "gemini":
-        return call_gemini(uid, text, task)
-    if name == "openrouter":
-        return call_openrouter(uid, text, task, model=model or OPENROUTER_FREE_MODEL)
-    raise RuntimeError(f"Provider tidak dikenal: {name}")
-
-
-
 def _provider_label(name):
     return {
+        "gemini": "Gemini",
         "nvidia": "NVIDIA DeepSeek V4 Flash",
         "groq": "Groq",
-        "gemini": "Gemini",
         "openrouter": "OpenRouter Free",
     }.get(name, name)
 
 
-def _auto_provider_order(task):
-    # Gemini adalah PRIMARY untuk AUTO. Jika Gemini sedang cooldown 24 jam
-    # (atau baru saja gagal di request ini), langsung dilewati tanpa
-    # menunggu timeout, dan NVIDIA menjadi provider berikutnya yang dicoba
-    # (sesuai permintaan: Gemini cooldown -> alihkan ke NVIDIA dahulu).
-    # NVIDIA sudah punya timeout pendek (8 detik) jadi aman ditaruh di depan;
-    # Groq & OpenRouter sekarang juga punya timeout eksplisit (lihat
-    # GROQ_TIMEOUT_SECONDS / OPENROUTER_TIMEOUT_SECONDS) sehingga fallback
-    # tetap cepat walau NVIDIA ikut gagal.
-    others = {
-        "video": ["nvidia", "groq", "openrouter"],
-        "image": ["nvidia", "groq", "openrouter"],
-        "coding": ["nvidia", "groq", "openrouter"],
-        "reasoning": ["nvidia", "groq", "openrouter"],
-        "math": ["nvidia", "groq", "openrouter"],
-        "technical": ["nvidia", "groq", "openrouter"],
-        "civil": ["nvidia", "groq", "openrouter"],
-        "memory": ["nvidia", "groq", "openrouter"],
-        "creative": ["nvidia", "groq", "openrouter"],
-        "general": ["nvidia", "groq", "openrouter"],
-    }
-    order = [] if _gemini_disabled() else ["gemini"]
-    return order + others.get(task, others["general"])
+def _provider_available(name):
+    return {
+        "gemini": bool(gemini),
+        "nvidia": bool(nvidia),
+        "groq": bool(groq),
+        "openrouter": bool(openrouter),
+    }.get(name, False)
 
-
-MANUAL_AI_MODES = {
-    "nvidia_fast": ("nvidia", NVIDIA_MODEL, "none", "🟢 NVIDIA Fast"),
-    "nvidia_coding": ("nvidia", NVIDIA_MODEL, "high", "💻 NVIDIA Coding"),
-    "nvidia_technical": ("nvidia", NVIDIA_MODEL, "high", "🔧 NVIDIA Technical"),
-    "nvidia_reasoning": ("nvidia", NVIDIA_MODEL, "max", "🧠 NVIDIA Reasoning"),
-    "groq_fast": ("groq", GROQ_FAST_MODEL, None, "⚡ Groq Fast"),
-    "groq_coding": ("groq", GROQ_CODING_MODEL, None, "💻 Groq Coding"),
-    "groq_reasoning": ("groq", GROQ_REASONING_MODEL, None, "🧠 Groq Reasoning"),
-    "gemini": ("gemini", GEMINI_CHAT_MODEL, None, "👁 Gemini"),
-    "openrouter": ("openrouter", OPENROUTER_FREE_MODEL, None, "🌐 OpenRouter FREE"),
-}
 
 def _transparent_error_reason(exc):
-    """Ringkas error provider tanpa membocorkan API key atau payload."""
     t = str(exc).lower()
-    if "401" in t or "unauthorized" in t or "invalid api key" in t or "authentication" in t:
+    if "401" in t or "unauthorized" in t or "invalid api key" in t:
         return "AUTH"
     if "403" in t or "forbidden" in t:
         return "FORBIDDEN"
-    if "429" in t or "rate limit" in t or "resource_exhausted" in t or "quota" in t:
+    if "429" in t or "rate limit" in t or "quota" in t or "resource_exhausted" in t:
         return "RATE LIMIT/QUOTA"
     if "timeout" in t or "timed out" in t:
         return "TIMEOUT"
     if "model_not_found" in t or "model not found" in t or "does not exist" in t:
         return "MODEL TIDAK TERSEDIA"
-    if "422" in t or "validation" in t:
+    if "validation" in t or "422" in t:
         return "VALIDATION"
     return "ERROR"
 
 
-def _transparent_route_line(provider_name, model, status, reason=None):
-    icons = {"nvidia": "🟢", "groq": "⚡", "gemini": "👁️", "openrouter": "🌐"}
-    icon = icons.get(provider_name, "🤖")
-    label = _provider_label(provider_name)
-    suffix = f" — {reason}" if reason else ""
-    return f"{icon} {label} | {model or 'default'} | {status}{suffix}"
+def _auto_provider_order(task):
+    # Gemini selalu PRIMARY. Tidak ada cooldown. Jika gagal pada request ini,
+    # langsung lanjut NVIDIA -> provider lain. Request berikutnya Gemini dicoba lagi.
+    groq_models = {
+        "coding": [GROQ_CODING_MODEL, GROQ_REASONING_MODEL, GROQ_FAST_MODEL],
+        "reasoning": [GROQ_REASONING_MODEL, GROQ_FAST_MODEL],
+        "math": [GROQ_REASONING_MODEL, GROQ_FAST_MODEL],
+        "technical": [GROQ_REASONING_MODEL, GROQ_FAST_MODEL],
+        "civil": [GROQ_REASONING_MODEL, GROQ_FAST_MODEL],
+        "creative": [GROQ_FAST_MODEL, GROQ_REASONING_MODEL],
+        "general": [GROQ_FAST_MODEL, GROQ_REASONING_MODEL],
+    }.get(task, [GROQ_FAST_MODEL, GROQ_REASONING_MODEL])
+    return [
+        ("gemini", GEMINI_CHAT_MODEL),
+        ("nvidia", NVIDIA_MODEL),
+        *[("groq", m) for m in groq_models],
+        ("openrouter", OPENROUTER_FREE_MODEL),
+        ("groq", GROQ_BACKUP_MODEL_1),
+        ("groq", GROQ_BACKUP_MODEL_2),
+        ("groq", GROQ_BACKUP_MODEL_3),
+        ("groq", GROQ_BACKUP_MODEL_4),
+        ("groq", GROQ_BACKUP_MODEL_5),
+        ("openrouter", OPENROUTER_BACKUP_MODEL),
+    ]
+
+
+def _manual_provider_order(mode, task):
+    cfg = MANUAL_AI_MODES.get(mode)
+    if not cfg:
+        return _auto_provider_order(task)
+    provider, model, _, _ = cfg
+    fallback = [x for x in _auto_provider_order(task) if x[0] != provider]
+    return [(provider, model)] + fallback
 
 
 def chat_router(uid, text):
     started = time.perf_counter()
     task = classify_task(text)
-    mode = user_ai_mode.get(str(uid), "auto")
 
     if task == "civil":
         civil_result = civil_calculator(text)
         if civil_result:
-            elapsed = time.perf_counter() - started
-            meta = {
-                "provider": "local",
-                "provider_label": "Civil Calculator",
-                "model": "Local Calculation Engine",
-                "task": task,
-                "status": "LOCAL",
-                "elapsed": elapsed,
-                "routes": ["🧮 Civil Calculator | Local Calculation Engine | LOCAL"],
-            }
-            return civil_result, meta
+            return civil_result, "Civil Calculator", "Local Calculation Engine", task, [
+                {"provider": "local", "model": "Local Calculation Engine", "status": "LOCAL"}
+            ]
 
-    if mode == "auto":
-        routes = [(p, None, None) for p in _auto_provider_order(task)]
-    else:
-        cfg = MANUAL_AI_MODES.get(mode)
-        if not cfg:
-            mode = "auto"
-            routes = [(p, None, None) for p in _auto_provider_order(task)]
-        else:
-            provider, model, effort, _label = cfg
-            fallback = _auto_provider_order(task)
-            if provider == "gemini" and _gemini_disabled():
-                routes = [(p, None, None) for p in fallback if p != "gemini"]
-            else:
-                routes = [(provider, model, effort)] + [(p, None, None) for p in fallback if p != provider]
-
+    mode = user_ai_mode.get(str(uid), "auto")
+    routes = _auto_provider_order(task) if mode == "auto" else _manual_provider_order(mode, task)
     attempts = []
-    for provider_name, selected_model, effort in routes:
+
+    for provider_name, selected_model in routes:
         if not _provider_available(provider_name):
             attempts.append({
                 "provider": provider_name,
@@ -2830,43 +2577,37 @@ def chat_router(uid, text):
             })
             continue
         try:
-            answer, model = _call_with_retry(
-                lambda p=provider_name, m=selected_model, e=effort: _provider_call(
-                    p, uid, text, task, model=m, reasoning_effort=e
-                ),
-                retries=0,
-            )
+            if provider_name == "gemini":
+                answer, model = call_gemini(uid, text, task)
+            elif provider_name == "nvidia":
+                answer, model = call_nvidia(uid, text, task, selected_model)
+            elif provider_name == "groq":
+                answer, model = call_groq(uid, text, task, selected_model)
+            else:
+                answer, model = call_openrouter(uid, text, task, selected_model)
+
             if not answer.strip():
                 raise RuntimeError("Provider mengembalikan jawaban kosong.")
-            status = "MAIN" if not attempts else "FALLBACK"
+
             attempts.append({
                 "provider": provider_name,
                 "model": model,
                 "status": "SUCCESS",
             })
-            elapsed = time.perf_counter() - started
-            meta = {
-                "provider": provider_name,
-                "provider_label": _provider_label(provider_name),
-                "model": model,
-                "task": task,
-                "status": status,
-                "elapsed": elapsed,
-                "routes": attempts,
-            }
-            return answer, meta
+            log.info("CHAT SUCCESS | task=%s | provider=%s | model=%s | elapsed=%.2f", task, provider_name, model, time.perf_counter()-started)
+            return answer, _provider_label(provider_name), model, task, attempts
+
         except Exception as e:
             reason = _transparent_error_reason(e)
-            if provider_name == "gemini":
-                _gemini_mark_failure(e)
             attempts.append({
                 "provider": provider_name,
                 "model": selected_model,
                 "status": "FAILED",
                 "reason": reason,
             })
+            log.warning("PROVIDER FAILED | %s | %s", provider_name, reason)
+            continue
 
-    elapsed = time.perf_counter() - started
     detail = "\n".join(
         f"• {_provider_label(a['provider'])}: {a.get('reason', a.get('status', 'UNKNOWN'))}"
         for a in attempts
@@ -2874,51 +2615,31 @@ def chat_router(uid, text):
     raise RuntimeError("Semua provider AI GRATIS gagal.\n" + detail)
 
 
-def format_transparent_response(answer, meta):
-    """Header wajib yang menjelaskan AI/model/task/status/waktu/riwayat."""
-    if meta.get("provider") == "local":
-        history = "\n".join(f"• {x}" for x in meta.get("routes", []))
-    else:
-        history_lines = []
-        for a in meta.get("routes", []):
-            if a.get("status") == "FAILED":
-                history_lines.append(
-                    _transparent_route_line(
-                        a["provider"], a.get("model"), "❌ GAGAL", a.get("reason")
-                    )
-                )
-            elif a.get("status") == "SKIP":
-                history_lines.append(
-                    _transparent_route_line(
-                        a["provider"], a.get("model"), "⏭️ DILEWATI", a.get("reason")
-                    )
-                )
-            elif a.get("status") == "SUCCESS":
-                history_lines.append(
-                    _transparent_route_line(
-                        a["provider"], a.get("model"), "✅ BERHASIL"
-                    )
-                )
-        history = "\n".join(history_lines) if history_lines else "• Tidak ada percobaan provider."
-
-    status_icon = "🎯" if meta.get("status") == "MAIN" else ("🔄" if meta.get("status") == "FALLBACK" else "🧮")
-    provider_display = meta.get("provider_label", "Unknown")
-    model_display = meta.get("model", "Unknown")
-    task_display = str(meta.get("task", "general")).upper()
-    elapsed = meta.get("elapsed", 0.0)
-
-    header = (
+def format_transparent_response(answer, provider, model, task, routes, elapsed):
+    lines = []
+    for a in routes:
+        if a.get("status") == "FAILED":
+            lines.append(f"❌ {_provider_label(a['provider'])} | {a.get('model') or '-'} | FAILED — {a.get('reason', 'ERROR')}")
+        elif a.get("status") == "SKIP":
+            lines.append(f"⚪ {_provider_label(a['provider'])} | {a.get('model') or '-'} | SKIP — {a.get('reason', 'API TIDAK AKTIF')}")
+        elif a.get("status") == "SUCCESS":
+            lines.append(f"{'🤖' if a['provider'] == 'local' else '✅'} {_provider_label(a['provider'])} | {a.get('model') or '-'} | SUCCESS")
+        else:
+            lines.append(f"ℹ️ {_provider_label(a['provider'])} | {a.get('model') or '-'} | {a.get('status', 'UNKNOWN')}")
+    history = "\n".join(lines)
+    return (
         "━━━━━━━━━━━━━━━━━━━━\n"
-        f"🤖 AI: {provider_display}\n"
-        f"🧠 Model: {model_display}\n"
-        f"📌 Task: {task_display}\n"
-        f"{status_icon} Status: {meta.get('status', 'UNKNOWN')}\n"
+        f"🤖 AI: {provider}\n"
+        f"🧠 Model: {model}\n"
+        f"📌 Task: {task}\n"
+        "✅ Status: SUCCESS\n"
         f"⏱️ Waktu: {elapsed:.2f} detik\n"
         "🔍 Riwayat routing:\n"
         f"{history}\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
+        + answer
     )
-    return header + answer
+
 
 # ============================================================
 # TELEGRAM API
@@ -3364,70 +3085,114 @@ def analyze_image(
     prompt
 ):
 
-    started = time.perf_counter()
-    if not gemini and not openrouter:
-        raise RuntimeError("Tidak ada provider vision GRATIS yang aktif.")
+    if not gemini:
+        raise RuntimeError(
+            "Gemini belum dikonfigurasi."
+        )
 
-    attempts = []
+    errors = []
 
-    if gemini:
-        try:
-            r = gemini.models.generate_content(
-                model=GEMINI_CHAT_MODEL,
-                contents=[
-                    types.Part.from_bytes(data=data, mime_type=mime),
-                    SYSTEM + "\n\n" + prompt,
-                ],
+    try:
+
+        r = gemini.models.generate_content(
+            model=GEMINI_CHAT_MODEL,
+            contents=[
+                types.Part.from_bytes(
+                    data=data,
+                    mime_type=mime,
+                ),
+                SYSTEM
+                + "\n\n"
+                + prompt,
+            ],
+        )
+
+        if r.text:
+
+            return (
+                r.text,
+                GEMINI_CHAT_MODEL,
             )
-            if r.text:
-                attempts.append({"provider": "gemini", "model": GEMINI_CHAT_MODEL, "status": "SUCCESS"})
-                return r.text, GEMINI_CHAT_MODEL, {
-                    "provider": "gemini",
-                    "provider_label": "Gemini",
-                    "model": GEMINI_CHAT_MODEL,
-                    "task": "vision",
-                    "status": "MAIN" if not attempts[:-1] else "FALLBACK",
-                    "elapsed": time.perf_counter() - started,
-                    "routes": attempts,
-                }
-            raise RuntimeError("jawaban kosong")
-        except Exception as e:
-            attempts.append({"provider": "gemini", "model": GEMINI_CHAT_MODEL, "status": "FAILED", "reason": _transparent_error_reason(e)})
+
+    except Exception as e:
+
+        errors.append(
+            "Gemini Vision: "
+            + str(e)[:220]
+        )
 
     if openrouter:
-        try:
-            b64 = base64.b64encode(data).decode()
-            content = [
-                {"type": "text", "text": SYSTEM + "\n\n" + prompt},
-                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-            ]
-            r = openrouter.chat.completions.create(
-                model=OPENROUTER_FREE_MODEL,
-                messages=[{"role": "user", "content": content}],
-                max_tokens=4096,
-            )
-            answer = r.choices[0].message.content or ""
-            if answer.strip():
-                selected = getattr(r, "model", None) or OPENROUTER_FREE_MODEL
-                attempts.append({"provider": "openrouter", "model": selected, "status": "SUCCESS"})
-                return answer, selected, {
-                    "provider": "openrouter",
-                    "provider_label": "OpenRouter Free",
-                    "model": selected,
-                    "task": "vision",
-                    "status": "FALLBACK" if attempts[:-1] else "MAIN",
-                    "elapsed": time.perf_counter() - started,
-                    "routes": attempts,
-                }
-            raise RuntimeError("jawaban kosong")
-        except Exception as e:
-            attempts.append({"provider": "openrouter", "model": OPENROUTER_FREE_MODEL, "status": "FAILED", "reason": _transparent_error_reason(e)})
 
-    detail = "\n".join(
-        f"• {_provider_label(a['provider'])}: {a.get('reason', a.get('status', 'UNKNOWN'))}"
-        for a in attempts
+        try:
+
+            b64 = base64.b64encode(
+                data
+            ).decode()
+
+            content = [
+
+                {
+                    "type": "text",
+                    "text":
+                        SYSTEM
+                        + "\n\n"
+                        + prompt,
+                },
+
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url":
+                            f"data:{mime};base64,{b64}"
+                    },
+                },
+            ]
+
+            r = (
+                openrouter
+                .chat
+                .completions
+                .create(
+                    model=OPENROUTER_FREE_MODEL,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": content,
+                        }
+                    ],
+                    max_tokens=4096,
+                )
+            )
+
+            answer = (
+                r.choices[0]
+                .message
+                .content
+                or ""
+            )
+
+            if answer.strip():
+
+                return (
+                    answer,
+                    getattr(
+                        r,
+                        "model",
+                        OPENROUTER_FREE_MODEL,
+                    ),
+                )
+
+        except Exception as e:
+
+            errors.append(
+                "OpenRouter Vision: "
+                + str(e)[:220]
+            )
+
+    raise RuntimeError(
+        "Semua provider vision gagal: "
+        + " | ".join(errors)
     )
-    raise RuntimeError("Semua provider vision GRATIS gagal.\n" + detail)
 
 
 # ============================================================
@@ -3440,44 +3205,69 @@ def analyze_video(
     prompt
 ):
 
-    started = time.perf_counter()
     if not gemini:
-        raise RuntimeError("Gemini diperlukan untuk video.")
+        raise RuntimeError(
+            "Gemini diperlukan untuk video."
+        )
 
     uploaded = gemini.files.upload(
-        file=types.Part.from_bytes(data=data, mime_type=mime)
+        file=types.Part.from_bytes(
+            data=data,
+            mime_type=mime,
+        )
     )
 
     for _ in range(60):
-        f = gemini.files.get(name=uploaded.name)
-        state = getattr(getattr(f, "state", None), "name", "")
+
+        f = gemini.files.get(
+            name=uploaded.name
+        )
+
+        state = getattr(
+            getattr(
+                f,
+                "state",
+                None
+            ),
+            "name",
+            "",
+        )
+
         if state == "ACTIVE":
+
             uploaded = f
+
             break
+
         if state == "FAILED":
-            raise RuntimeError("Gemini gagal memproses video.")
+
+            raise RuntimeError(
+                "Gemini gagal memproses video."
+            )
+
         time.sleep(2)
+
     else:
-        raise RuntimeError("Video belum siap diproses.")
 
-    result = gemini.models.generate_content(
-        model=GEMINI_CHAT_MODEL,
-        contents=[uploaded, SYSTEM + "\n\n" + prompt],
+        raise RuntimeError(
+            "Video belum siap diproses."
+        )
+
+    result = (
+        gemini
+        .models
+        .generate_content(
+            model=GEMINI_CHAT_MODEL,
+            contents=[
+                uploaded,
+                SYSTEM
+                + "\n\n"
+                + prompt,
+            ],
+        )
     )
-    answer = result.text or ""
-    if not answer.strip():
-        raise RuntimeError("Gemini mengembalikan jawaban video kosong.")
 
-    meta = {
-        "provider": "gemini",
-        "provider_label": "Gemini",
-        "model": GEMINI_CHAT_MODEL,
-        "task": "video",
-        "status": "MAIN",
-        "elapsed": time.perf_counter() - started,
-        "routes": [{"provider": "gemini", "model": GEMINI_CHAT_MODEL, "status": "SUCCESS"}],
-    }
-    return answer, meta
+    return result.text or ""
 
 
 # ============================================================
@@ -3756,11 +3546,6 @@ def command_arg(text):
 
 async def handle(update):
 
-    # ========================================================
-    # INLINE CALLBACK HANDLER — FAST / AGENT + MODEL
-    # ========================================================
-    # IMPORTANT: answerCallbackQuery FIRST so Telegram immediately
-    # acknowledges the button tap, even if GitHub/AI is slow.
     callback = update.get("callback_query")
     if callback:
         callback_id = callback.get("id")
@@ -3768,94 +3553,36 @@ async def handle(update):
         from_user = callback.get("from") or {}
         uid = str(from_user.get("id", ""))
         chat_id = (callback.get("message") or {}).get("chat", {}).get("id")
-
-        # Always acknowledge the Telegram button immediately.
         if callback_id:
             try:
-                await tg("answerCallbackQuery", {
-                    "callback_query_id": callback_id,
-                    "text": "⏳ Memproses pilihan...",
-                })
-            except Exception as e:
-                logging.warning("CALLBACK ACK FAILED: %s", e)
+                await tg("answerCallbackQuery", {"callback_query_id": callback_id, "text": "⏳ Memproses pilihan..."})
+            except Exception:
+                pass
 
-        conversation_map = {
-            "conv_fast": "fast",
-            "conv_agent": "agent",
-        }
-
-        if data in conversation_map:
-            conv = conversation_map[data]
-            user_conversation_mode[uid] = conv
-
-            try:
-                if conv == "fast":
-                    # FAST is strictly stateless. Do not delete GitHub memory.
-                    memory[uid] = []
-                    label = "⚡ FAST — memory OFF"
-                else:
-                    # Load GitHub memory before confirming AGENT mode.
-                    count = await asyncio.wait_for(
-                        load_persistent_memory(uid),
-                        timeout=11.0,
-                    )
-                    label = f"🧠 AGENT — GitHub memory ({count} item)"
-
-                if chat_id:
-                    await send_text(
-                        chat_id,
-                        f"✅ Mode percakapan diubah ke: {label}"
-                    )
-            except Exception as e:
-                logging.exception("CONVERSATION MODE CALLBACK ERROR")
-                # Keep the selected mode, but clearly report the memory issue.
-                if chat_id:
-                    if conv == "agent":
-                        await send_text(
-                            chat_id,
-                            "⚠️ AGENT dipilih, tetapi memory GitHub belum dapat dimuat. "
-                            "Mode tetap AGENT dan akan dicoba lagi pada pesan berikutnya.\n\n"
-                            f"Detail: {type(e).__name__}"
-                        )
-                    else:
-                        await send_text(chat_id, "✅ Mode percakapan: ⚡ FAST — memory OFF")
-            return
-
-        mode_map = {
-            "ai_auto": "auto",
-            "ai_nvidia_fast": "nvidia_fast",
-            "ai_nvidia_coding": "nvidia_coding",
-            "ai_nvidia_technical": "nvidia_technical",
-            "ai_nvidia_reasoning": "nvidia_reasoning",
-            "ai_groq_fast": "groq_fast",
-            "ai_groq_coding": "groq_coding",
-            "ai_groq_reasoning": "groq_reasoning",
-            "ai_gemini": "gemini",
-            "ai_openrouter": "openrouter",
-        }
-
-        if data in mode_map:
-            selected = mode_map[data]
-            user_ai_mode[uid] = selected
-            label = (
-                "🔄 AUTO"
-                if selected == "auto"
-                else MANUAL_AI_MODES.get(
-                    selected,
-                    (None, None, None, selected),
-                )[3]
-            )
+        if data in {"conv_fast", "conv_agent"}:
+            mode = "fast" if data == "conv_fast" else "agent"
+            user_conversation_mode[uid] = mode
+            if mode == "fast":
+                memory[uid] = []
+                label = "⚡ FAST — memory OFF"
+            else:
+                try:
+                    await asyncio.wait_for(load_persistent_memory(uid), timeout=11.0)
+                    label = f"🧠 AGENT — GitHub memory ({len(history(uid))} item)"
+                except Exception as e:
+                    label = f"🧠 AGENT — GitHub memory (belum termuat: {type(e).__name__})"
             if chat_id:
-                await send_text(
-                    chat_id,
-                    f"✅ Mode AI diubah ke: {label}\n\n"
-                    "Mode ini menjadi AI utama. Jika gagal/limit, "
-                    "bot tetap otomatis pindah ke provider GRATIS lain.",
-                )
+                await send_text(chat_id, f"✅ Mode percakapan diubah ke: {label}")
             return
 
-        # Unknown callback: acknowledge and stop instead of falling through.
-        logging.warning("UNKNOWN TELEGRAM CALLBACK: %s", data)
+        if data.startswith("ai_"):
+            selected = data[3:]
+            if selected == "auto" or selected in MANUAL_AI_MODES:
+                user_ai_mode[uid] = selected
+                label = "🔄 AUTO" if selected == "auto" else MANUAL_AI_MODES[selected][3]
+                if chat_id:
+                    await send_text(chat_id, f"✅ Mode AI diubah ke: {label}\n\nJika AI pilihan gagal/limit, router tetap otomatis fallback ke provider GRATIS lain.")
+            return
         return
 
     message = update.get(
@@ -3972,6 +3699,7 @@ urugan 10 x 5 x 0.2 meter
 
 Perintah:
 
+/mode
 /model
 /reset
 /gambar <prompt>
@@ -4005,9 +3733,9 @@ hasil material bukan pengganti desain engineer.
             "chat_id": chat_id,
             "text": clean_telegram_text(
                 f"🎛️ MODE PERCAKAPAN\n\nMode aktif: {label}\n\n"
-                "⚡ FAST = cepat, tidak membaca/menyimpan memory GitHub.\n"
-                "🧠 AGENT = selalu membaca dan menyimpan persistent memory di GitHub.\n\n"
-                "Catatan: memilih model AI (/model) tetap terpisah dari mode percakapan."
+                "⚡ FAST = super cepat, tidak membaca atau menyimpan memory GitHub.\n"
+                "🧠 AGENT = membaca memory GitHub sebelum menjawab dan menyimpan memory setelah menjawab.\n\n"
+                "Pemilihan AI (/model) tetap terpisah dari mode percakapan."
             ),
             "reply_markup": keyboard,
         })
@@ -4028,4 +3756,576 @@ hasil material bukan pengganti desain engineer.
 
         memory[uid] = []
         if user_conversation_mode.get(uid, "fast") == "agent":
-            await save_persistent
+            await save_persistent_memory(uid)
+
+        await send_text(
+            chat_id,
+            "✅ Memory sesi dihapus.",
+        )
+
+        return
+
+    # ========================================================
+    # MODEL
+    # ========================================================
+
+    if text.startswith(
+        "/model"
+    ):
+
+        current_mode = user_ai_mode.get(uid, "auto")
+        current_conv = user_conversation_mode.get(uid, "fast")
+        keyboard = {
+            "inline_keyboard": [
+                [{"text": "🔄 AUTO", "callback_data": "ai_auto"}],
+                [{"text": "🟢 NVIDIA Fast", "callback_data": "ai_nvidia_fast"}, {"text": "💻 NVIDIA Coding", "callback_data": "ai_nvidia_coding"}],
+                [{"text": "🔧 NVIDIA Technical", "callback_data": "ai_nvidia_technical"}, {"text": "🧠 NVIDIA Reasoning", "callback_data": "ai_nvidia_reasoning"}],
+                [{"text": "⚡ Groq Fast", "callback_data": "ai_groq_fast"}, {"text": "💻 Groq Coding", "callback_data": "ai_groq_coding"}],
+                [{"text": "🧠 Groq Reasoning", "callback_data": "ai_groq_reasoning"}],
+                [{"text": "👁️ Gemini", "callback_data": "ai_gemini"}, {"text": "🌐 OpenRouter FREE", "callback_data": "ai_openrouter"}],
+            ]
+        }
+        ai_label = "🔄 AUTO" if current_mode == "auto" else MANUAL_AI_MODES.get(current_mode, (None,None,None,current_mode))[3]
+        status = (
+            f"🤖 MODE AI: {ai_label}\n"
+            f"🎛️ MODE PERCAKAPAN: {'⚡ FAST' if current_conv == 'fast' else '🧠 AGENT'}\n\n"
+            f"Gemini: {'✅ AKTIF' if gemini else '❌ TIDAK AKTIF'}\n"
+            f"NVIDIA: {'✅ AKTIF' if nvidia else '❌ TIDAK AKTIF'}\n"
+            f"Groq: {'✅ AKTIF' if groq else '❌ TIDAK AKTIF'}\n"
+            f"OpenRouter FREE: {'✅ AKTIF' if openrouter else '❌ TIDAK AKTIF'}\n\n"
+            "🔄 AUTO ROUTING:\n"
+            "Gemini PRIMARY → NVIDIA → Groq → OpenRouter → backup.\n"
+            "Gemini tidak memiliki cooldown 24 jam; jika gagal, request langsung fallback dan pada request berikutnya Gemini dicoba lagi.\n\n"
+            f"Gemini: {GEMINI_CHAT_MODEL}\n"
+            f"NVIDIA: {NVIDIA_MODEL}\n"
+            f"Groq Coding: {GROQ_CODING_MODEL}\n"
+            f"Groq Reasoning: {GROQ_REASONING_MODEL}\n"
+            f"Groq Fast: {GROQ_FAST_MODEL}\n"
+            f"OpenRouter: {OPENROUTER_FREE_MODEL}\n\n"
+            "💰 PAID MODEL ROUTING: DISABLED"
+        )
+        await tg("sendMessage", {
+            "chat_id": chat_id,
+            "text": clean_telegram_text(status),
+            "reply_markup": keyboard,
+        })
+        return
+
+        return
+
+    # ========================================================
+    # GAMBAR
+    # ========================================================
+
+    if text.startswith(
+        "/gambar"
+    ):
+
+        prompt = command_arg(
+            text
+        )
+
+        if not prompt:
+
+            await send_text(
+                chat_id,
+                """
+🎨 GENERATE GAMBAR
+
+Contoh:
+
+/gambar pagar minimalis hitam modern
+""",
+            )
+
+            return
+
+        await send_text(
+            chat_id,
+            "🎨 Memilih generator gambar GRATIS...",
+        )
+
+        try:
+
+            data, provider = (
+                await asyncio.to_thread(
+                    generate_image,
+                    prompt,
+                )
+            )
+
+            if provider.startswith(
+                "Cloudflare"
+            ):
+
+                await send_photo(
+                    chat_id,
+                    data,
+                    filename="image.jpg",
+                    content_type="image/jpeg",
+                )
+
+            else:
+
+                await send_photo(
+                    chat_id,
+                    data,
+                )
+
+            await send_text(
+                chat_id,
+                f"✅ Gambar dibuat oleh {provider}.",
+            )
+
+        except Exception as e:
+
+            log.exception(
+                "image generation failed"
+            )
+
+            await send_text(
+                chat_id,
+                "❌ Generate gambar gagal.\n"
+                + str(e)[:700],
+            )
+
+        return
+
+    # ========================================================
+    # VIDEO
+    # ========================================================
+
+    if message.get(
+        "video"
+    ):
+
+        await send_text(
+            chat_id,
+            "🎥 Sedang menganalisis video...",
+        )
+
+        try:
+
+            data, path = await tg_file(
+                message["video"]["file_id"]
+            )
+
+            if len(data) > (
+                20 * 1024 * 1024
+            ):
+
+                await send_text(
+                    chat_id,
+                    "❌ Video lebih dari 20 MB.",
+                )
+
+                return
+
+            mime = (
+                "video/quicktime"
+                if path.lower().endswith(
+                    ".mov"
+                )
+                else "video/mp4"
+            )
+
+            answer = (
+                await asyncio.to_thread(
+                    analyze_video,
+                    data,
+                    mime,
+                    caption or
+                    """
+Analisa video ini secara detail.
+
+Jika terkait pekerjaan manufaktur,
+bengkel, konstruksi, sipil, tenda,
+kanopi, atau fabrikasi:
+
+- jelaskan objek
+- jelaskan proses
+- jelaskan kondisi
+- jelaskan masalah
+- berikan saran praktis
+
+Jangan mengarang ukuran yang tidak terlihat.
+""",
+                )
+            )
+
+            await send_text(
+                chat_id,
+                answer,
+            )
+
+        except Exception as e:
+
+            log.exception(
+                "video analysis failed"
+            )
+
+            await send_text(
+                chat_id,
+                "❌ Analisis video gagal.\n"
+                + str(e)[:700],
+            )
+
+        return
+
+    # ========================================================
+    # UPLOAD HASIL PEKERJAAN (foto + caption "/pekerjaan <kategori> <lokasi>")
+    # ========================================================
+
+    if message.get("photo") and caption.strip().lower().startswith("/pekerjaan"):
+
+        args = command_arg(caption.strip())
+        parts = args.split(maxsplit=1)
+
+        if len(parts) < 2:
+            await send_text(
+                chat_id,
+                "Format caption belum lengkap.\n\n"
+                "Kirim foto dengan caption:\n"
+                "/pekerjaan <kategori> <lokasi>\n\n"
+                "Contoh:\n/pekerjaan kanopi cibinong",
+            )
+            return
+
+        category_raw, location_raw = parts[0], parts[1]
+
+        await send_text(
+            chat_id,
+            f"⏳ Mengupload foto & menambahkan hasil pekerjaan "
+            f"({category_raw} - {location_raw})...",
+        )
+
+        try:
+            photo_bytes, _ = await tg_file(message["photo"][-1]["file_id"])
+
+            entry = await upload_pekerjaan_from_photo(
+                photo_bytes, category_raw, location_raw
+            )
+
+            await send_text(
+                chat_id,
+                "✅ Berhasil ditambahkan!\n\n"
+                f"Judul: {entry['title']}\n"
+                f"Kategori: {entry['category']}\n\n"
+                "Halaman akan otomatis dibuat dalam 1-2 menit "
+                "(GitHub Action sedang generate halaman).\n"
+                f"Link nanti: https://design-manufaktur.vercel.app{entry['url']}",
+            )
+
+        except Exception as e:
+            log.exception("upload pekerjaan failed")
+            await send_text(
+                chat_id,
+                "❌ Gagal upload hasil pekerjaan.\n" + str(e)[:700],
+            )
+
+        return
+
+    # ========================================================
+    # PHOTO
+    # ========================================================
+
+    if message.get(
+        "photo"
+    ):
+
+        await send_text(
+            chat_id,
+            "🖼️ Gemini Vision sedang menganalisis gambar...",
+        )
+
+        try:
+
+            data, path = await tg_file(
+                message["photo"][-1]["file_id"]
+            )
+
+            mime = (
+                mimetypes.guess_type(
+                    path
+                )[0]
+                or "image/jpeg"
+            )
+
+            prompt = caption or """
+Analisa gambar ini secara detail.
+
+Jika terkait manufaktur, bengkel las,
+tenda, pagar, fabrikasi, konstruksi,
+sipil, atau produk custom:
+
+- jelaskan objek
+- jelaskan komponen
+- jelaskan fungsi
+- jelaskan kondisi
+- jelaskan masalah
+- berikan saran praktis
+
+Jangan mengarang ukuran yang tidak terlihat.
+"""
+
+            answer, model = (
+                await asyncio.to_thread(
+                    analyze_image,
+                    data,
+                    mime,
+                    prompt,
+                )
+            )
+
+            await send_text(
+                chat_id,
+                answer,
+            )
+
+            log.info(
+                "VISION SUCCESS | model=%s",
+                model,
+            )
+
+        except Exception as e:
+
+            log.exception(
+                "image analysis failed"
+            )
+
+            await send_text(
+                chat_id,
+                "❌ Analisis gambar gagal.\n"
+                + str(e)[:700],
+            )
+
+        return
+
+    # ========================================================
+    # NORMAL CHAT
+    # ========================================================
+
+    if not text:
+        return
+
+    try:
+
+        conv_mode = user_conversation_mode.get(uid, "fast")
+        if conv_mode == "agent":
+            await load_persistent_memory(uid)
+
+        await tg(
+            "sendChatAction",
+            {
+                "chat_id": chat_id,
+                "action": "typing",
+            },
+        )
+
+        started = time.perf_counter()
+        (
+            answer,
+            provider,
+            model,
+            task,
+            routes,
+        ) = await asyncio.to_thread(
+            chat_router,
+            uid,
+            text,
+        )
+        elapsed = time.perf_counter() - started
+
+        if conv_mode == "agent":
+            remember(uid, "user", text)
+            remember(uid, "assistant", answer)
+            await save_persistent_memory(uid)
+
+        response = format_transparent_response(
+            answer, provider, model, task, routes, elapsed
+        )
+        await send_text(chat_id, response)
+
+        log.info(
+            "CHAT DONE | task=%s | provider=%s | model=%s",
+            task,
+            provider,
+            model,
+        )
+
+    except Exception as e:
+
+        log.exception(
+            "chat failed"
+        )
+
+        await send_text(
+            chat_id,
+            "❌ Semua AI GRATIS gagal untuk request ini.\n\n"
+            + str(e)[:700],
+        )
+
+
+# ============================================================
+# ROOT
+# ============================================================
+
+@app.get("/")
+async def root():
+
+    return {
+        "ok": True,
+        "service":
+            "Designmanufaktur Super AI Agent + Civil Calculator",
+
+        "free_only":
+            True,
+
+        "telegram_format":
+            "clean_and_mobile_friendly",
+
+        "civil_calculator":
+            True,
+
+        "providers": {
+
+            "gemini":
+                bool(gemini),
+
+            "openrouter_free":
+                bool(openrouter),
+
+            "groq_free_tier":
+                bool(groq),
+
+            "cloudflare_flux":
+                CLOUDFLARE_ENABLED,
+
+            "pollinations_fallback":
+                POLLINATIONS_ENABLED,
+
+        },
+
+        "civil_features": [
+
+            "concrete",
+            "sloof",
+            "kolom",
+            "balok",
+            "plat",
+            "footplat",
+            "pondasi",
+            "dinding",
+            "plester",
+            "acian",
+            "galian",
+            "urugan",
+            "rebar",
+
+        ],
+
+        "models": {
+
+            "gemini":
+                GEMINI_CHAT_MODEL,
+
+            "openrouter":
+                OPENROUTER_FREE_MODEL,
+
+            "groq_coding":
+                GROQ_CODING_MODEL,
+
+            "groq_reasoning":
+                GROQ_REASONING_MODEL,
+
+            "groq_fast":
+                GROQ_FAST_MODEL,
+
+            "cloudflare_image":
+                CLOUDFLARE_IMAGE_MODEL,
+
+        },
+    }
+
+
+# ============================================================
+# API
+# ============================================================
+
+@app.get("/api")
+async def api_root():
+
+    return await root()
+
+
+# ============================================================
+# WEBHOOK IMPLEMENTATION
+# ============================================================
+
+async def webhook_impl(
+    request: Request,
+    x_telegram_bot_api_secret_token:
+        Optional[str],
+):
+
+    if (
+        WEBHOOK_SECRET
+        and
+        x_telegram_bot_api_secret_token
+        != WEBHOOK_SECRET
+    ):
+
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid webhook secret",
+        )
+
+    update = await request.json()
+
+    await handle(
+        update
+    )
+
+    return {
+        "ok": True
+    }
+
+
+# ============================================================
+# TELEGRAM WEBHOOK
+# ============================================================
+
+@app.post(
+    "/api/webhook"
+)
+async def webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token:
+        Optional[str] = Header(
+            default=None
+        ),
+):
+
+    return await webhook_impl(
+        request,
+        x_telegram_bot_api_secret_token,
+    )
+
+
+# ============================================================
+# LEGACY ROOT WEBHOOK
+# ============================================================
+
+@app.post("/")
+async def root_post(
+    request: Request,
+    x_telegram_bot_api_secret_token:
+        Optional[str] = Header(
+            default=None
+        ),
+):
+
+    return await webhook_impl(
+        request,
+        x_telegram_bot_api_secret_token,
+    )
