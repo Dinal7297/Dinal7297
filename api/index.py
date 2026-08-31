@@ -478,7 +478,11 @@ nvidia = (
 # ============================================================
 
 memory = {}
-MAX_MEMORY = 20
+MAX_MEMORY = 200
+
+# Persistent GitHub memory is intentionally larger than the LLM context.
+# The model only receives a small recent window, while AGENT can reload
+# the complete stored history (up to this safety cap) after every redeploy.
 
 # Mode AI per pengguna: auto / nvidia / groq / gemini / openrouter
 user_ai_mode = {}
@@ -580,59 +584,136 @@ def _memory_path(uid):
 
 
 async def load_persistent_memory(uid):
+    """Load the user's complete persistent memory from GitHub for AGENT mode."""
     uid = str(uid)
     if not GITHUB_TOKEN or not GITHUB_REPO:
         memory.setdefault(uid, [])
-        return
+        raise RuntimeError("GITHUB_TOKEN atau GITHUB_REPO belum tersedia")
+
     url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
-    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=10) as client:
             response = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
+
         if response.status_code == 404:
+            # A new AGENT user simply starts with an empty persistent store.
             memory[uid] = []
-            return
+            log.info("PERSISTENT MEMORY LOAD: no file yet | uid=%s", uid)
+            return 0
+
         response.raise_for_status()
         encoded = response.json().get("content", "")
         if not encoded:
             memory[uid] = []
-            return
+            return 0
+
         raw = base64.b64decode(encoded.replace("\n", "")).decode("utf-8")
         saved = json.loads(raw)
         if isinstance(saved, dict):
             saved = saved.get("memory", [])
         if not isinstance(saved, list):
             saved = []
+
+        # Preserve the whole persistent store up to the explicit safety cap.
         memory[uid] = saved[-MAX_MEMORY:]
         log.info("PERSISTENT MEMORY LOAD OK | uid=%s | items=%s", uid, len(memory[uid]))
-    except Exception as e:
-        log.warning("PERSISTENT MEMORY LOAD FAILED | uid=%s | %s", uid, str(e)[:300])
-        memory.setdefault(uid, [])
+        return len(memory[uid])
+
+    except Exception:
+        log.exception("PERSISTENT MEMORY LOAD FAILED | uid=%s", uid)
+        raise
+
+
+def _merge_memory_items(remote_items, local_items):
+    """Merge GitHub + local memory without duplicating identical entries."""
+    merged = []
+    seen = set()
+
+    for item in list(remote_items or []) + list(local_items or []):
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role", ""))
+        content = str(item.get("content", ""))
+        key = (role, content)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append({"role": role or "user", "content": content})
+
+    return merged[-MAX_MEMORY:]
 
 
 async def save_persistent_memory(uid):
+    """Atomically-ish update the user's GitHub memory and keep remote history."""
     uid = str(uid)
     if not GITHUB_TOKEN or not GITHUB_REPO:
-        log.warning("PERSISTENT MEMORY SAVE SKIPPED | GITHUB_TOKEN/GITHUB_REPO belum tersedia")
-        return
-    raw = json.dumps({"user_id": uid, "memory": history(uid)[-MAX_MEMORY:], "updated_at": int(time.time())}, ensure_ascii=False, indent=2)
-    encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
+        raise RuntimeError("GITHUB_TOKEN atau GITHUB_REPO belum tersedia")
+
     url = f"{GITHUB_API}/repos/{GITHUB_REPO}/contents/{_memory_path(uid)}"
-    headers = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=10) as client:
             current = await client.get(url, headers=headers, params={"ref": GITHUB_BRANCH})
-            body = {"message": f"memory: update {uid}", "content": encoded, "branch": GITHUB_BRANCH}
+
+            remote_items = []
+            sha = None
             if current.status_code == 200:
-                body["sha"] = current.json().get("sha")
+                payload = current.json()
+                sha = payload.get("sha")
+                encoded_remote = payload.get("content", "")
+                if encoded_remote:
+                    remote_raw = base64.b64decode(encoded_remote.replace("\n", "")).decode("utf-8")
+                    remote_saved = json.loads(remote_raw)
+                    if isinstance(remote_saved, dict):
+                        remote_saved = remote_saved.get("memory", [])
+                    if isinstance(remote_saved, list):
+                        remote_items = remote_saved
             elif current.status_code != 404:
                 current.raise_for_status()
+
+            merged = _merge_memory_items(remote_items, history(uid))
+            # Keep local cache synchronized with the actual GitHub document.
+            memory[uid] = merged
+
+            raw = json.dumps(
+                {
+                    "user_id": uid,
+                    "memory": merged,
+                    "updated_at": int(time.time()),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
+            body = {
+                "message": f"memory: update {uid}",
+                "content": encoded,
+                "branch": GITHUB_BRANCH,
+            }
+            if sha:
+                body["sha"] = sha
+
             saved = await client.put(url, headers=headers, json=body)
-        if saved.status_code not in (200, 201):
-            saved.raise_for_status()
-        log.info("PERSISTENT MEMORY SAVE OK | uid=%s", uid)
-    except Exception as e:
-        log.warning("PERSISTENT MEMORY SAVE FAILED | uid=%s | %s", uid, str(e)[:300])
+            if saved.status_code not in (200, 201):
+                saved.raise_for_status()
+
+        log.info("PERSISTENT MEMORY SAVE OK | uid=%s | items=%s", uid, len(memory[uid]))
+        return len(memory[uid])
+
+    except Exception:
+        log.exception("PERSISTENT MEMORY SAVE FAILED | uid=%s", uid)
+        raise
 
 
 # ============================================================
@@ -3602,11 +3683,11 @@ async def handle(update):
                     label = "⚡ FAST — memory OFF"
                 else:
                     # Load GitHub memory before confirming AGENT mode.
-                    await asyncio.wait_for(
+                    count = await asyncio.wait_for(
                         load_persistent_memory(uid),
-                        timeout=12.0,
+                        timeout=11.0,
                     )
-                    label = f"🧠 AGENT — GitHub memory ({len(history(uid))} item)"
+                    label = f"🧠 AGENT — GitHub memory ({count} item)"
 
                 if chat_id:
                     await send_text(
@@ -4187,7 +4268,15 @@ Jangan mengarang ukuran yang tidak terlihat.
 
         conversation_mode = user_conversation_mode.get(uid, "fast")
         if conversation_mode == "agent":
-            await load_persistent_memory(uid)
+            try:
+                await load_persistent_memory(uid)
+            except Exception as e:
+                await send_text(
+                    chat_id,
+                    "⚠️ AGENT tidak dapat memuat memory GitHub. Pesan tidak diproses agar memory tidak tertukar.\n\n"
+                    f"Detail: {type(e).__name__}"
+                )
+                return
         else:
             # FAST is strictly stateless. Persistent GitHub memory remains untouched.
             memory[uid] = []
@@ -4220,7 +4309,15 @@ Jangan mengarang ukuran yang tidak terlihat.
         )
 
         if conversation_mode == "agent":
-            await save_persistent_memory(uid)
+            try:
+                saved_count = await save_persistent_memory(uid)
+            except Exception as e:
+                await send_text(
+                    chat_id,
+                    "⚠️ Jawaban berhasil dibuat, tetapi memory BELUM tersimpan ke GitHub.\n"
+                    f"Detail: {type(e).__name__}"
+                )
+                return
 
         transparent_answer = format_transparent_response(answer, meta)
 
@@ -4269,6 +4366,8 @@ async def root():
 
         "conversation_modes": ["fast", "agent"],
         "persistent_memory": "github_for_agent_only",
+        "persistent_memory_limit": MAX_MEMORY,
+        "agent_loads_all_saved_memory": True,
 
         "telegram_format":
             "clean_and_mobile_friendly",
