@@ -1,3 +1,4 @@
+# RESPONSE SPEED OPTIMIZATION v6
 import asyncio
 import base64
 import mimetypes
@@ -86,7 +87,8 @@ NVIDIA_MODEL = os.getenv(
     "NVIDIA_MODEL",
     "deepseek-ai/deepseek-v4-flash-0731",
 )
-NVIDIA_MAX_OUTPUT_TOKENS = int(os.getenv("NVIDIA_MAX_OUTPUT_TOKENS", "4096"))
+NVIDIA_MAX_OUTPUT_TOKENS = int(os.getenv("NVIDIA_MAX_OUTPUT_TOKENS", "2048"))
+FAST_RESPONSE_MODE = os.getenv("FAST_RESPONSE_MODE", "1").lower() not in ("0", "false", "no", "off")
 
 # ------------------------------------------------------------
 # MODEL CADANGAN TAMBAHAN (BARU)
@@ -543,14 +545,14 @@ WEBSITE_DATA_PATH = "data/pekerjaan.json"
 # berapa banyak riwayat yang benar-benar dikirim ke provider AI
 # per request, supaya tidak kena limit token/rate dari provider
 # gratis (khususnya Groq yang TPM-nya kecil).
-MAX_CONTEXT_TURNS = 8
-MAX_CONTEXT_CHARS_PER_ITEM = 1200
+MAX_CONTEXT_TURNS = 4
+MAX_CONTEXT_CHARS_PER_ITEM = 700
 
-GROQ_MAX_CONTEXT_TURNS = 4
-GROQ_MAX_CONTEXT_CHARS_PER_ITEM = 400
-GROQ_MAX_OUTPUT_TOKENS = 1536
+GROQ_MAX_CONTEXT_TURNS = 3
+GROQ_MAX_CONTEXT_CHARS_PER_ITEM = 350
+GROQ_MAX_OUTPUT_TOKENS = 1200
 
-OPENROUTER_MAX_OUTPUT_TOKENS = 2048
+OPENROUTER_MAX_OUTPUT_TOKENS = 1400
 
 
 def history(uid):
@@ -2394,14 +2396,17 @@ def call_nvidia(uid, text, task, reasoning_effort=None, model=None):
     effort = reasoning_effort
     if effort is None:
         effort = {
-            "reasoning": "max",
-            "math": "high",
-            "coding": "high",
-            "technical": "high",
-            "civil": "high",
+            "reasoning": "high",
+            "math": "none",
+            "coding": "none",
+            "technical": "none",
+            "civil": "none",
             "creative": "none",
             "general": "none",
         }.get(task, "none")
+
+        if FAST_RESPONSE_MODE and task != "reasoning":
+            effort = "none"
 
     # Gunakan format NVIDIA yang sama dengan contoh API key/user yang sudah
     # terbukti dipakai: reasoning_effort dikirim melalui chat_template_kwargs.
@@ -2569,9 +2574,10 @@ def _provider_label(name):
 
 
 def _auto_provider_order(task):
-    if task in ("reasoning", "math", "coding", "technical", "civil"):
-        return ["nvidia", "groq", "openrouter", "gemini"]
-    return ["nvidia", "groq", "openrouter", "gemini"]
+    # Jalur cepat: provider utama NVIDIA, lalu Gemini sebagai fallback
+    # sebelum provider yang pada konfigurasi saat ini sering mengembalikan
+    # model_not_found/error. Fallback tetap tersedia jika Gemini tidak aktif.
+    return ["nvidia", "gemini", "groq", "openrouter"]
 
 
 MANUAL_AI_MODES = {
@@ -2641,7 +2647,7 @@ def chat_router(uid, text):
             routes = [(p, None, None) for p in _auto_provider_order(task)]
         else:
             provider, model, effort, _label = cfg
-            fallback = ["nvidia", "groq", "openrouter", "gemini"]
+            fallback = ["nvidia", "gemini", "groq", "openrouter"]
             routes = [(provider, model, effort)] + [(p, None, None) for p in fallback if p != provider]
 
     attempts = []
@@ -2659,7 +2665,7 @@ def chat_router(uid, text):
                 lambda p=provider_name, m=selected_model, e=effort: _provider_call(
                     p, uid, text, task, model=m, reasoning_effort=e
                 ),
-                retries=1,
+                retries=0,
             )
             if not answer.strip():
                 raise RuntimeError("Provider mengembalikan jawaban kosong.")
